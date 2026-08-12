@@ -1,0 +1,27 @@
+# Build/compilation files
+compile_commands.json
+build/
+.build/
+debug/
+.debug/
+.cache/
+obj/
+bin/
+
+# Python
+.env/
+env/
+venv/
+.venv/
+__pycache__/
+
+# meson wrap files
+**/subprojects/*
+!**/subprojects/*.wrap
+!**/subprojects/wrapdb.json
+
+# Performance and output files
+perf*
+*lock*
+nohup.out
+

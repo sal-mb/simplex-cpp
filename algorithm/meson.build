@@ -3,33 +3,43 @@ project(
   'cpp',
   default_options: [
     'cpp_std=c++20',
-    'buildtype=release',
+    'buildtype=debug',
     'warning_level=3',
     'b_ndebug=if-release',
     'b_lto=true',
   ],
 )
 
+cpp = meson.get_compiler('cpp')
 
-deps = [] 
-fmt_dep = dependency('fmt', required: true)
-deps += fmt_dep
+deps = [
+  dependency('fmt', required: true),
+  dependency('cxxopts', required: true),
+  dependency('eigen3', required: true),
+]
 
-argparse = dependency('cxxopts', required: true)
-deps += argparse
+# SuiteSparse
+suitesparse_dep = [
+  cpp.find_library('umfpack', required: true),
+  cpp.find_library('cholmod', required: true),
+  cpp.find_library('amd', required: true),
+  cpp.find_library('suitesparseconfig', required: true),
+]
 
-eigen = depencency('eigen', required: true)
-deps += eigen
+deps += suitesparse_dep
+
 
 subdir('src')
 
-incdir = include_directories('include')
+incdir = include_directories('include', '/usr/include/suitesparse')
 
-extra_args = ['-march=native','-O3']
-
-executable('dracula', sources,
+# Executable
+executable(
+  'dracula',
+  sources,
   include_directories: incdir,
-  cpp_args: extra_args,
+  dependencies: deps,
+  cpp_args: ['-march=native', '-O3'],
   install: true,
-  dependencies: deps
 )
+
