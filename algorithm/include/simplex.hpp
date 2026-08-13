@@ -1,32 +1,48 @@
 #pragma once
 
+#include <vector>
+
+#include "Eigen/Core"
+#include "Eigen/SparseCore"
 #include "mps_reader.hpp"
 #include "params.hpp"
-#include <vector>
+using namespace Eigen;
+
+struct EtaMatrix {
+    VectorXd col;
+    size_t index;
+};
+
 class Simplex {
-public:
-  const mpsReader &mps;
-  Simplex(const mpsReader &mps, const Params &p);
+   public:
+    const mpsReader& mps;
+    Simplex(const mpsReader& mps, const Params& p);
 
-  double solve();
+    double solve();
 
-  const Params &p;
-  const int m = mps.n_rows_inq + mps.n_rows_eq;
-  const int n = mps.n_cols + m;
+    const Params& p;
+    const int m = mps.n_rows_inq + mps.n_rows_eq;
+    const int n = mps.A.cols();
+    const VectorXd& ub = mps.ub;
+    const VectorXd& lb = mps.lb;
 
-  vector<size_t> x_b_idx;
-  vector<size_t> x_n_idx;
-  const MatrixXd &A = mps.A;
-  const VectorXd &c = mps.c;
+    SparseMatrix<double> A = mps.A.sparseView();
+    const VectorXd c = -mps.c;
+    SparseMatrix<double> B0;
 
-  VectorXd x_b;
-  VectorXd x_n;
+    vector<size_t> x_b_idx;
+    vector<size_t> x_n_idx;
 
-  MatrixXd B;
+    VectorXd x_b;
+    VectorXd x_n;
 
-  std::vector<MatrixXd> eta_vector;
+    vector<EtaMatrix> eta_vector;
 
-private:
-  std::tuple<bool, size_t> choose_entering_variable();
-  std::tuple<double, size_t> choose_leaving_variable(const VectorXd &d);
+   private:
+    tuple<bool, size_t, double> choose_entering_variable();
+    tuple<double, size_t> choose_leaving_variable(const VectorXd& d, size_t entering_x_n_idx, double entering_value);
+
+    VectorXd solve_LU(const SparseMatrix<double>& A, const VectorXd& b);
+    RowVectorXd solve_btran(RowVectorXd b);
+    VectorXd solve_ftran(VectorXd a);
 };

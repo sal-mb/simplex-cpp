@@ -1,0 +1,59 @@
+# Style: Custom modern C++ based on Google with snake_case vars and PascalCase types
+Language: Cpp
+BasedOnStyle: Google
+Standard: c++20
+
+# --- Indentation & Layout ---
+IndentWidth: 4
+TabWidth: 4
+UseTab: Never
+ContinuationIndentWidth: 8
+ColumnLimit: 120
+AllowShortFunctionsOnASingleLine: All
+AllowShortIfStatementsOnASingleLine: true 
+AllowShortLoopsOnASingleLine: false
+BinPackArguments: true
+BinPackParameters: true
+BreakBeforeBraces: Attach
+NamespaceIndentation: All
+AlignConsecutiveAssignments: false
+AlignConsecutiveDeclarations: false
+AlignOperands: true
+AlignTrailingComments: true
+SpaceBeforeParens: ControlStatements
+SpacesBeforeTrailingComments: 1
+
+# --- Include ordering ---
+IncludeBlocks: Regroup
+IncludeCategories:
+  - Regex: '^<.*:\.h>'
+    Priority: 1
+  - Regex: '^<.*>'
+    Priority: 2
+  - Regex: '^".*"'
+    Priority: 3
+SortIncludes: true
+IncludeIsMainRegex: '([-_](test|unittest))?$'
+
+# --- Braces, Constructors, Lambdas ---
+BreakConstructorInitializersBeforeComma: true
+ConstructorInitializerAllOnOneLineOrOnePerLine: true
+AllowAllConstructorInitializersOnNextLine: false
+LambdaBodyIndentation: OuterScope
+
+# --- Pointers & References ---
+PointerAlignment: Left
+ReferenceAlignment: Left
+DerivePointerAlignment: false
+
+# --- Comments ---
+ReflowComments: true
+SpacesInLineCommentPrefix:
+  Minimum: 1
+  Maximum: 1
+
+# --- Misc ---
+FixNamespaceComments: true
+SortUsingDeclarations: true
+SpacesInAngles: false
+Cpp11BracedListStyle: true

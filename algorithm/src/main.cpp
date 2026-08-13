@@ -49,8 +49,8 @@ int main(int argc, char *argv[]) {
   mpsReader reader;
   reader.read(p.instance_file, p.preprocess);
 
-  reader.A.block(0, reader.n_cols, reader.n_rows_inq, reader.n_rows_inq) =
-      MatrixXd::Identity(reader.n_rows_inq, reader.n_rows_inq);
+  // reader.A.block(0, reader.n_cols, reader.n_rows_inq, reader.n_rows_inq) =
+  //     MatrixXd::Identity(reader.n_rows_inq, reader.n_rows_inq);
 
   const int m = reader.n_rows_inq + reader.n_rows_eq;
   const int n = reader.n_cols + m;
