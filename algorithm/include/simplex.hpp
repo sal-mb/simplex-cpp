@@ -29,14 +29,18 @@ struct LeavingVariableInfo {
 };
 
 struct Solution {
+    vector<size_t> basic_idx;
+    vector<size_t> nonbasic_idx;
+    SparseMatrix<double> B;
+    SparseMatrix<double> N;
     VectorXd x;
     double cost;
 };
 class Simplex {
    public:
-    Simplex(const mpsReader& mps, const Params& p, int phase);
+    Simplex(const mpsReader& mps, const Params& p, optional<Solution> initial, int phase);
 
-    std::tuple<VectorXd, double> solve();
+    Solution solve();
 
     const mpsReader& mps;
     const Params& p;
@@ -49,8 +53,8 @@ class Simplex {
     SparseMatrix<double> A;
     SparseMatrix<double> B0;
     SparseMatrix<double> N;
-    const VectorXd &ub, &lb;
-    const VectorXd c;
+    VectorXd ub, lb;
+    VectorXd c;
 
     // SOLUTION
     VectorXd x;
@@ -67,10 +71,12 @@ class Simplex {
     UmfPackLU<SparseMatrix<double>> B0_solver;
     RowVectorXd solve_btran(RowVectorXd b);
     VectorXd solve_ftran(VectorXd a);
+    void refactorization();
 
     // Core function
     EnteringVariableInfo choose_entering_variable();
     LeavingVariableInfo choose_leaving_variable(const VectorXd& d, size_t entering_nonbasic_slot, double reduced_cost);
+
     // basis change
     void update_basis(size_t leaving_basis_idx, size_t entering_nonbasic_idx);
 

@@ -17,7 +17,7 @@
 using namespace Eigen;
 using namespace fmt;
 
-Simplex::Simplex(const mpsReader& mps, const Params& p, int phase)
+Simplex::Simplex(const mpsReader& mps, const Params& p, optional<Solution> s, int phase)
     : mps(mps)
     , p(p)
     , m(mps.n_rows_inq + mps.n_rows_eq)
@@ -30,21 +30,28 @@ Simplex::Simplex(const mpsReader& mps, const Params& p, int phase)
     , x(VectorXd::Zero(n))
     , c_b(VectorXd::Zero(m))
     , y(RowVectorXd::Zero(m)) {
-    for (int i = 0; i < n; i++) {
-        if (i < mps.n_cols) {
-            nonbasic_idx.push_back(i);
-        } else {
-            basic_idx.push_back(i);
+    if (s.has_value()) {
+        basic_idx = s->basic_idx;
+        nonbasic_idx = s->nonbasic_idx;
+        B0 = s->B;
+        N = s->N;
+        x = s->x;
+
+    } else {
+        for (int i = 0; i < n; i++) {
+            if (i < mps.n_cols) {
+                nonbasic_idx.push_back(i);
+            } else {
+                basic_idx.push_back(i);
+            }
         }
+        // Initialize persistent basic cost vector c_b
+        for (int i = 0; i < m; ++i) {
+            c_b[i] = c[basic_idx[i]];
+        }
+        B0 = A.rightCols(m);
+        N = A.leftCols(mps.n_cols);
     }
-
-    // Initialize persistent basic cost vector c_b
-    for (int i = 0; i < m; ++i) {
-        c_b[i] = c[basic_idx[i]];
-    }
-
-    B0 = A.rightCols(m);
-    N = A.leftCols(n);
 
     B0_solver.compute(B0);
     if (B0_solver.info() != Eigen::Success) {
@@ -52,29 +59,53 @@ Simplex::Simplex(const mpsReader& mps, const Params& p, int phase)
     }
 }
 
-std::tuple<VectorXd, double> Simplex::solve() {
+Solution Simplex::solve() {
     iteration = 0;
     basis_changed = true;
+
     if (phase == 0) {
+        if (p.verbose) {
+            println("PHASE 0");
+        }
         for (int i = 0; i < mps.n_cols; i++) {
             auto var = nonbasic_idx[i];
             if (ub[var] < pInf - EPSILON_1 && lb[var] > nInf + EPSILON_1) {
                 x[var] = ub[var];
                 continue;
-            } else if (ub[var] < pInf - EPSILON_1) {
+            }
+
+            if (ub[var] < pInf - EPSILON_1) {
                 x[var] = ub[var];
                 continue;
-            } else if (lb[var] > nInf + EPSILON_1) {
+            }
+
+            if (lb[var] > nInf + EPSILON_1) {
                 x[var] = lb[var];
                 continue;
             }
             x[var] = 0;
         }
-        VectorXd x_n = x.topRows(n);
+        VectorXd x_n = x.topRows(mps.n_cols);
 
-        UmfPackLU<SparseMatrix<double>> phase_0_solver;
-        phase_0_solver.compute(N);
-        VectorXd x_b = -(mps.b - phase_0_solver.solve(x_n));
+        VectorXd x_b = -(mps.b - N * x_n);
+        c = VectorXd::Zero(n);
+
+        for (int i = 0; i < m; i++) {
+            auto x_i = basic_idx[i];
+            auto x_val = x[x_i];
+            if (x_val < lb[x_i] - EPSILON_1) {
+                c[x_i] = 1;
+                auto temp = lb[x_i];
+                lb[x_i] = nInf;
+                ub[x_i] = temp;
+            } else if (x_val > ub[x_i] + EPSILON_1) {
+                c[x_i] = -1;
+                auto temp = ub[x_i];
+                ub[x_i] = pInf;
+                lb[x_i] = temp;
+            }
+            c_b[i] = c[x_i];
+        }
     }
 
     while (true) {
@@ -85,9 +116,18 @@ std::tuple<VectorXd, double> Simplex::solve() {
         auto entering = choose_entering_variable();
         if (entering.optimal) {
             if (p.verbose) {
+                println("Finished Phase {} with {} iterations", phase, iteration);
                 println("[Status] Optimal solution found.");
+                getchar();
             }
-            return std::make_tuple(x, -mps.c.dot(x));
+            refactorization();
+            Solution s = {.basic_idx = basic_idx,
+                          .nonbasic_idx = nonbasic_idx,
+                          .B = B0,
+                          .N = N,
+                          .x = x,
+                          .cost = -(x.dot(mps.c))};
+            return s;
         }
 
         const size_t entering_var = nonbasic_idx[entering.index];
@@ -124,11 +164,11 @@ std::tuple<VectorXd, double> Simplex::solve() {
 
         if (p.verbose) {
             println("\nPress Enter to continue...");
-            getchar();
+            // getchar();
         }
     }
 
-    return std::make_tuple(VectorXd(n, 0), pInf);
+    return {};
 }
 
 EnteringVariableInfo Simplex::choose_entering_variable() {
@@ -289,6 +329,26 @@ void Simplex::update_basis(size_t leaving_basis_idx, size_t entering_nonbasic_id
     basic_idx[leaving_basis_idx] = entering_var;
     nonbasic_idx[entering_nonbasic_idx] = leaving_var;
 
+    N.col(entering_nonbasic_idx) = A.col(leaving_var);
+
+    if (phase == 0) {
+        auto entering_val = x[entering_var];
+        if (entering_val < lb[entering_var] - EPSILON_1) {
+            c[entering_var] = 1;
+            auto temp = lb[entering_var];
+            lb[entering_var] = nInf;
+            ub[entering_var] = temp;
+        } else if (entering_val > ub[entering_var] + EPSILON_1) {
+            c[entering_var] = -1;
+            auto temp = ub[entering_var];
+            ub[entering_var] = pInf;
+            lb[entering_var] = temp;
+        }
+
+        c[leaving_var] = 0;
+        ub[leaving_var] = mps.ub[leaving_var];
+        lb[leaving_var] = mps.lb[leaving_var];
+    }
     c_b[leaving_basis_idx] = c[entering_var];
 
     // mark basis change
@@ -297,7 +357,8 @@ void Simplex::update_basis(size_t leaving_basis_idx, size_t entering_nonbasic_id
 
 RowVectorXd Simplex::solve_btran(RowVectorXd b) {
     VectorXd y_vec = b;
-    for (size_t i = eta_vector.size(); i-- > 0;) {
+
+    for (int i = eta_vector.size() - 1; i >= 0; i--) {
         const EtaMatrix& e = eta_vector[i];
         double sum = b[e.index];
         for (size_t j = 0; j < static_cast<size_t>(m); j++) {
@@ -321,7 +382,7 @@ VectorXd Simplex::solve_ftran(VectorXd a) {
         d[e.index] = d_eta;
         for (size_t j = 0; j < static_cast<size_t>(m); j++) {
             if (j != e.index) {
-                d[j] = a[j] - e.col(j) * d_eta;
+                d[j] = a[j] - (e.col(j) * d_eta);
             }
         }
     }
@@ -342,8 +403,27 @@ void Simplex::it_log() const {
         x_n[i] = x[nonbasic_idx[i]];
     }
 
+    if (phase == 0) {
+        println("c: {}", streamed(c.transpose()));
+    }
     println("x_b: {}", streamed(x_b.transpose()));
     println("x_n: {}", streamed(x_n.transpose()));
     println("basic_idx: {}", basic_idx);
     println("nonbasic_idx: {}", nonbasic_idx);
+}
+
+void Simplex::refactorization() {
+    B0.resize(m, m);
+    B0.setZero();
+
+    for (int col = 0; col < m; ++col) {
+        B0.col(col) = A.col(basic_idx[col]);
+    }
+
+    B0_solver.compute(B0);
+    if (B0_solver.info() != Eigen::Success) {
+        throw std::runtime_error("Refactorization failed");
+    }
+
+    eta_vector.clear();
 }
