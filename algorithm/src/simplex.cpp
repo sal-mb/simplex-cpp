@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <cmath>
 #include <cstdlib>
 #include <limits>
@@ -214,16 +215,17 @@ LeavingVariableInfo Simplex::choose_leaving_variable(const VectorXd& d, size_t e
 
     // CALCULATING STEP(T) OF ENTERING NON BASIC VARIABLE X_N
     double entering_dir = (reduced_cost > 0) ? 1.0 : -1.0;
-    double x_n_t = 0;
+    double x_n_t = pInf;
 
     // If entering_dir or reduced_cost > 0
     // x_N has to increase
     // else x_N has to decrease
-    if (entering_dir > 0) {
+    if (entering_dir > EPSILON_1) {
         x_n_t = ub[entering_var] - x[entering_var];
     } else {
         x_n_t = x[entering_var] - lb[entering_var];
     }
+    x_n_t = std::max(0.0, x_n_t);
 
     // CALCULATING STEP(T) OF BASIC VARIABLES X_B
     auto get_basic_t_limit = [&](int i) -> double {
@@ -237,14 +239,18 @@ LeavingVariableInfo Simplex::choose_leaving_variable(const VectorXd& d, size_t e
 
         size_t basic_var = basic_idx[i];
 
-        bool decreases = (d_i * entering_dir > 0);
+        bool decreases = (d_i * entering_dir > EPSILON_1);
         double t = 0;
         if (decreases) {
-            t = (x[basic_var] - lb[basic_var]) / std::abs(d_i);
+            if (lb[basic_var] > nInf + EPSILON_1) {
+                t = (x[basic_var] - lb[basic_var]) / std::abs(d_i);
+                return std::max(0.0, t);
+            }
+        } else if (ub[basic_var] < pInf - EPSILON_1) {
+            t = (ub[basic_var] - x[basic_var]) / std::abs(d_i);
             return std::max(0.0, t);
         }
-        t = (ub[basic_var] - x[basic_var]) / std::abs(d_i);
-        return std::max(0.0, t);
+        return pInf;
     };
 
     double t = pInf;
@@ -276,6 +282,8 @@ LeavingVariableInfo Simplex::choose_leaving_variable(const VectorXd& d, size_t e
         throw std::runtime_error("Initial UMFPACK factorization of B0 failed");
     }
 
+    println("x_n_t: {}", x_n_t);
+    println("t: {}", t);
     // UPDATING VARIABLES
     if (x_n_t < t - EPSILON_1) {
         t = x_n_t;
@@ -307,6 +315,7 @@ LeavingVariableInfo Simplex::choose_leaving_variable(const VectorXd& d, size_t e
     result.step_length = t;
     result.leaving_b_idx = (leaving_b_idx != -1) ? std::optional<size_t>(leaving_b_idx) : std::nullopt;
 
+    // getchar();
     return result;
 }
 
@@ -372,6 +381,9 @@ RowVectorXd Simplex::solve_btran(RowVectorXd b) {
                 sum -= e.col[j] * y[j];
             }
         }
+        if (sum < EPSILON_1) {
+            sum = 0;
+        }
         y[e.index] = sum / e.col[e.index];
         b = y;
     }
@@ -423,6 +435,7 @@ void Simplex::it_log() const {
     println("x_n: {}", streamed(x_n.transpose()));
     println("basic_idx: {}", basic_idx);
     println("nonbasic_idx: {}", nonbasic_idx);
+    getchar();
 }
 
 void Simplex::refactorization() {
@@ -497,16 +510,16 @@ void Simplex::init_phase_0() {
 
         // if x_b < lb we have to increase the variable until lb
         // so the new lb will be -inf and the ub will be the lb
-        if (x_val < lb[x_i] - EPSILON_1) {
+        if (x_val < mps.lb[x_i] - EPSILON_1) {
             c[x_i] = 1;
-            auto temp = lb[x_i];
+            auto temp = mps.lb[x_i];
             lb[x_i] = nInf;
             ub[x_i] = temp;
-        } else if (x_val > ub[x_i] + EPSILON_1) {
+        } else if (x_val > mps.ub[x_i] + EPSILON_1) {
             // if x_b > ub we have to decrease the variable until ub
             // so the new lb will be the ub and the ub will be inf
             c[x_i] = -1;
-            auto temp = ub[x_i];
+            auto temp = mps.ub[x_i];
             ub[x_i] = pInf;
             lb[x_i] = temp;
         }
