@@ -20,9 +20,9 @@ meson compile -C .build
 
 # --- If no args, show help ---
 if [ $# -eq 0 ]; then
-  ./.build/dracula --help
+  ./.build/simplex --help
   exit 0
 fi
 
 # --- Forward all arguments to the executable ---
-./.build/dracula "$@"
+./.build/simplex "$@"

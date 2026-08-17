@@ -1,5 +1,5 @@
 project(
-  'dracula',
+  'simplex',
   'cpp',
   default_options: [
     'cpp_std=c++20',
@@ -35,7 +35,7 @@ incdir = include_directories('include', '/usr/include/suitesparse')
 
 # Executable
 executable(
-  'dracula',
+  'simplex',
   sources,
   include_directories: incdir,
   dependencies: deps,

@@ -28,13 +28,14 @@ int main(int argc, char* argv[]) {
     println("Problem: {}", reader.Name);
     println("Rows: {}, Cols: {}", reader.n_rows, reader.n_cols);
     println("m: {}, n: {}", m, n);
-    println("A:\n{}", streamed(reader.A));
-    println("b:\n{}", streamed(reader.b.transpose()));
-    println("c:\n{}", streamed(reader.c.transpose()));
-    println("lb:\n{}", streamed(reader.lb.transpose()));
-    println("ub:\n{}", streamed(reader.ub.transpose()));
+    // println("A:\n{}", streamed(reader.A));
+    // println("b:\n{}", streamed(reader.b.transpose()));
+    // println("c:\n{}", streamed(reader.c.transpose()));
+    // println("lb:\n{}", streamed(reader.lb.transpose()));
+    // println("ub:\n{}", streamed(reader.ub.transpose()));
 
     Simplex solver_p0(reader, p, nullopt, 0);
+    auto start = std::chrono::high_resolution_clock::now();
     Solution s = solver_p0.solve();
     if (p.verbose) {
         getchar();
@@ -45,7 +46,11 @@ int main(int argc, char* argv[]) {
     }
     Simplex solver_p1(reader, p, s, 1);
     s = solver_p1.solve();
+    auto end = std::chrono::high_resolution_clock::now();
+
+    std::chrono::duration<double> elapsed = end - start;
     println("Objective cost: {}", s.cost);
+    println("Total time: {:.6f} seconds", elapsed.count());
 
     return 0;
 }

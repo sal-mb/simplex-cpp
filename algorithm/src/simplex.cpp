@@ -45,15 +45,18 @@ Simplex::Simplex(const mpsReader& mps, const Params& p, optional<Solution> s, in
                 basic_idx.push_back(i);
             }
         }
-        // Initialize persistent basic cost vector c_b
-        for (int i = 0; i < m; ++i) {
-            c_b[i] = c[basic_idx[i]];
-        }
         B0 = A.rightCols(m);
         N = A.leftCols(mps.n_cols);
     }
 
+    // Initialize persistent basic cost vector c_b
+    for (int i = 0; i < m; ++i) {
+        c_b[i] = c[basic_idx[i]];
+    }
+
+    B0T = B0.transpose();
     B0_solver.compute(B0);
+    B0T_solver.compute(B0T);
     if (B0_solver.info() != Eigen::Success) {
         throw std::runtime_error("Initial UMFPACK factorization of B0 failed");
     }
@@ -64,48 +67,7 @@ Solution Simplex::solve() {
     basis_changed = true;
 
     if (phase == 0) {
-        if (p.verbose) {
-            println("PHASE 0");
-        }
-        for (int i = 0; i < mps.n_cols; i++) {
-            auto var = nonbasic_idx[i];
-            if (ub[var] < pInf - EPSILON_1 && lb[var] > nInf + EPSILON_1) {
-                x[var] = ub[var];
-                continue;
-            }
-
-            if (ub[var] < pInf - EPSILON_1) {
-                x[var] = ub[var];
-                continue;
-            }
-
-            if (lb[var] > nInf + EPSILON_1) {
-                x[var] = lb[var];
-                continue;
-            }
-            x[var] = 0;
-        }
-        VectorXd x_n = x.topRows(mps.n_cols);
-
-        VectorXd x_b = -(mps.b - N * x_n);
-        c = VectorXd::Zero(n);
-
-        for (int i = 0; i < m; i++) {
-            auto x_i = basic_idx[i];
-            auto x_val = x[x_i];
-            if (x_val < lb[x_i] - EPSILON_1) {
-                c[x_i] = 1;
-                auto temp = lb[x_i];
-                lb[x_i] = nInf;
-                ub[x_i] = temp;
-            } else if (x_val > ub[x_i] + EPSILON_1) {
-                c[x_i] = -1;
-                auto temp = ub[x_i];
-                ub[x_i] = pInf;
-                lb[x_i] = temp;
-            }
-            c_b[i] = c[x_i];
-        }
+        init_phase_0();
     }
 
     while (true) {
@@ -115,6 +77,20 @@ Solution Simplex::solve() {
 
         auto entering = choose_entering_variable();
         if (entering.optimal) {
+            if (phase == 0) {
+                double infeasibility = 0.0;
+                for (int i = 0; i < m; ++i) {
+                    size_t var = basic_idx[i];
+                    if (x[var] < mps.lb[var] - EPSILON_1) {
+                        infeasibility += (mps.lb[var] - x[var]);
+                    } else if (x[var] > mps.ub[var] + EPSILON_1) {
+                        infeasibility += (x[var] - mps.ub[var]);
+                    }
+                }
+                if (infeasibility > EPSILON_1) {
+                    throw std::runtime_error("Problem is Infeasible in Phase 0");
+                }
+            }
             if (p.verbose) {
                 println("Finished Phase {} with {} iterations", phase, iteration);
                 println("[Status] Optimal solution found.");
@@ -161,6 +137,14 @@ Solution Simplex::solve() {
             }
         }
         iteration++;
+
+        if ((iteration % REFACTOR_PERIOD) == 0) {
+            if (p.verbose) {
+                println("[Refactorization] Refactorizing basis at iteration {}", iteration);
+            }
+
+            refactorization();
+        }
 
         if (p.verbose) {
             println("\nPress Enter to continue...");
@@ -236,9 +220,9 @@ LeavingVariableInfo Simplex::choose_leaving_variable(const VectorXd& d, size_t e
     // x_N has to increase
     // else x_N has to decrease
     if (entering_dir > 0) {
-        x_n_t = mps.ub[entering_var] - x[entering_var];
+        x_n_t = ub[entering_var] - x[entering_var];
     } else {
-        x_n_t = x[entering_var] - mps.lb[entering_var];
+        x_n_t = x[entering_var] - lb[entering_var];
     }
 
     // CALCULATING STEP(T) OF BASIC VARIABLES X_B
@@ -254,10 +238,13 @@ LeavingVariableInfo Simplex::choose_leaving_variable(const VectorXd& d, size_t e
         size_t basic_var = basic_idx[i];
 
         bool decreases = (d_i * entering_dir > 0);
+        double t = 0;
         if (decreases) {
-            return (x[basic_var] - lb[basic_var]) / std::abs(d_i);
+            t = (x[basic_var] - lb[basic_var]) / std::abs(d_i);
+            return std::max(0.0, t);
         }
-        return (ub[basic_var] - x[basic_var]) / std::abs(d_i);
+        t = (ub[basic_var] - x[basic_var]) / std::abs(d_i);
+        return std::max(0.0, t);
     };
 
     double t = pInf;
@@ -285,6 +272,9 @@ LeavingVariableInfo Simplex::choose_leaving_variable(const VectorXd& d, size_t e
             smallest_var_idx = basic_idx[i];
         }
     }
+    if (t >= pInf - EPSILON_1) {
+        throw std::runtime_error("Initial UMFPACK factorization of B0 failed");
+    }
 
     // UPDATING VARIABLES
     if (x_n_t < t - EPSILON_1) {
@@ -292,12 +282,21 @@ LeavingVariableInfo Simplex::choose_leaving_variable(const VectorXd& d, size_t e
         leaving_b_idx = -1;
     }
 
+    auto force_lb_ub = [&](int entering_var) {
+        if (std::abs(x[entering_var] - lb[entering_var]) < EPSILON_1) {
+            x[entering_var] = lb[entering_var];
+        } else if (std::abs(x[entering_var] - ub[entering_var]) < EPSILON_1) {
+            x[entering_var] = ub[entering_var];
+        }
+    };
     x[entering_var] += t * entering_dir;
+    force_lb_ub(entering_var);
 
     for (int i = 0; i < m; i++) {
         size_t basic_var = basic_idx[i];
 
         x[basic_var] -= d[i] * t * entering_dir;
+        force_lb_ub(basic_var);
 
         if (p.verbose) {
             println("  Updated x_{}: val = {:.6f}, t = {:.6f}, d_i = {:.6f}, red_cost = {:.6f}", basic_var,
@@ -333,14 +332,14 @@ void Simplex::update_basis(size_t leaving_basis_idx, size_t entering_nonbasic_id
 
     if (phase == 0) {
         auto entering_val = x[entering_var];
-        if (entering_val < lb[entering_var] - EPSILON_1) {
+        if (entering_val < mps.lb[entering_var] - EPSILON_1) {
             c[entering_var] = 1;
-            auto temp = lb[entering_var];
+            auto temp = mps.lb[entering_var];
             lb[entering_var] = nInf;
             ub[entering_var] = temp;
-        } else if (entering_val > ub[entering_var] + EPSILON_1) {
+        } else if (entering_val > mps.ub[entering_var] + EPSILON_1) {
             c[entering_var] = -1;
-            auto temp = ub[entering_var];
+            auto temp = mps.ub[entering_var];
             ub[entering_var] = pInf;
             lb[entering_var] = temp;
         }
@@ -349,6 +348,9 @@ void Simplex::update_basis(size_t leaving_basis_idx, size_t entering_nonbasic_id
         ub[leaving_var] = mps.ub[leaving_var];
         lb[leaving_var] = mps.lb[leaving_var];
     }
+    // println("entenring var: {}, leaving var {}", entering_var, leaving_var);
+    // getchar();
+
     c_b[leaving_basis_idx] = c[entering_var];
 
     // mark basis change
@@ -356,21 +358,25 @@ void Simplex::update_basis(size_t leaving_basis_idx, size_t entering_nonbasic_id
 }
 
 RowVectorXd Simplex::solve_btran(RowVectorXd b) {
-    VectorXd y_vec = b;
+    RowVectorXd y = b;
 
     for (int i = eta_vector.size() - 1; i >= 0; i--) {
         const EtaMatrix& e = eta_vector[i];
         double sum = b[e.index];
+        if (std::abs(e.col[e.index]) < EPSILON_1) {
+            println("error: division by 0 on btran");
+            continue;
+        }
         for (size_t j = 0; j < static_cast<size_t>(m); j++) {
             if (j != e.index) {
-                sum -= e.col[j] * y_vec[j];
+                sum -= e.col[j] * y[j];
             }
         }
-        y_vec[e.index] = sum / e.col[e.index];
-        b = y_vec;
+        y[e.index] = sum / e.col[e.index];
+        b = y;
     }
 
-    return B0_solver.solve(b.transpose()).transpose();
+    return B0T_solver.solve(b.transpose()).transpose();
 }
 
 VectorXd Simplex::solve_ftran(VectorXd a) {
@@ -378,11 +384,18 @@ VectorXd Simplex::solve_ftran(VectorXd a) {
 
     for (const auto& e : eta_vector) {
         a = d;
+        if (std::abs(e.col(e.index)) < EPSILON_1) {
+            println("error division by 0 on ftran");
+            continue;
+        }
         double d_eta = a[e.index] / e.col(e.index);
         d[e.index] = d_eta;
         for (size_t j = 0; j < static_cast<size_t>(m); j++) {
             if (j != e.index) {
                 d[j] = a[j] - (e.col(j) * d_eta);
+                if (abs(d[j]) < EPSILON_1) {
+                    d[j] = 0;
+                }
             }
         }
     }
@@ -420,10 +433,83 @@ void Simplex::refactorization() {
         B0.col(col) = A.col(basic_idx[col]);
     }
 
+    B0T = B0.transpose();
     B0_solver.compute(B0);
+    B0T_solver.compute(B0T);
     if (B0_solver.info() != Eigen::Success) {
+        println("\n!!! UMFPACK FAILED !!!");
+
+        // teste rápido para confirmar singularidade
+        FullPivLU<MatrixXd> lu(B0.toDense());
+        println("rank(B0) = {}", lu.rank());
+        println("rows(B0) = {}, cols(B0) = {}", B0.rows(), B0.cols());
+
         throw std::runtime_error("Refactorization failed");
     }
 
     eta_vector.clear();
+}
+
+void Simplex::init_phase_0() {
+    if (p.verbose) {
+        println("PHASE 0");
+    }
+    // initializng x
+    for (int i = 0; i < mps.n_cols; i++) {
+        auto var = nonbasic_idx[i];
+        // var with upper and lower bound
+        if (ub[var] < pInf - EPSILON_1 && lb[var] > nInf + EPSILON_1) {
+            x[var] = ub[var];
+            continue;
+        }
+
+        // var with upper bound
+        if (ub[var] < pInf - EPSILON_1) {
+            x[var] = ub[var];
+            continue;
+        }
+
+        // var with lower bound
+        if (lb[var] > nInf + EPSILON_1) {
+            x[var] = lb[var];
+            continue;
+        }
+        // free var
+        x[var] = 0;
+    }
+
+    VectorXd x_n = x.topRows(mps.n_cols);
+
+    VectorXd rhs = mps.b - N * x_n;
+    VectorXd x_b = B0_solver.solve(rhs);
+
+    // Assign computed basic values back into x
+    for (int i = 0; i < m; i++) {
+        x[basic_idx[i]] = x_b[i];
+    }
+
+    // initializing c vector
+    c = VectorXd::Zero(n);
+
+    for (int i = 0; i < m; i++) {
+        auto x_i = basic_idx[i];
+        auto x_val = x[x_i];
+
+        // if x_b < lb we have to increase the variable until lb
+        // so the new lb will be -inf and the ub will be the lb
+        if (x_val < lb[x_i] - EPSILON_1) {
+            c[x_i] = 1;
+            auto temp = lb[x_i];
+            lb[x_i] = nInf;
+            ub[x_i] = temp;
+        } else if (x_val > ub[x_i] + EPSILON_1) {
+            // if x_b > ub we have to decrease the variable until ub
+            // so the new lb will be the ub and the ub will be inf
+            c[x_i] = -1;
+            auto temp = ub[x_i];
+            ub[x_i] = pInf;
+            lb[x_i] = temp;
+        }
+        c_b[i] = c[x_i];
+    }
 }
