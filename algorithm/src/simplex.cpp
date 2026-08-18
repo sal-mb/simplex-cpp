@@ -278,16 +278,15 @@ LeavingVariableInfo Simplex::choose_leaving_variable(const VectorXd& d, size_t e
             smallest_var_idx = basic_idx[i];
         }
     }
-    if (t >= pInf - EPSILON_1) {
-        throw std::runtime_error("Initial UMFPACK factorization of B0 failed");
-    }
-
     println("x_n_t: {}", x_n_t);
     println("t: {}", t);
     // UPDATING VARIABLES
     if (x_n_t < t - EPSILON_1) {
         t = x_n_t;
         leaving_b_idx = -1;
+    }
+    if (t >= pInf - EPSILON_1) {
+        throw std::runtime_error("Problem Unbounded");
     }
 
     auto force_lb_ub = [&](int entering_var) {
@@ -367,49 +366,29 @@ void Simplex::update_basis(size_t leaving_basis_idx, size_t entering_nonbasic_id
 }
 
 RowVectorXd Simplex::solve_btran(RowVectorXd b) {
-    RowVectorXd y = b;
-
     for (int i = eta_vector.size() - 1; i >= 0; i--) {
         const EtaMatrix& e = eta_vector[i];
-        double sum = b[e.index];
-        if (std::abs(e.col[e.index]) < EPSILON_1) {
-            println("error: division by 0 on btran");
-            continue;
-        }
-        for (size_t j = 0; j < static_cast<size_t>(m); j++) {
-            if (j != e.index) {
-                sum -= e.col[j] * y[j];
-            }
-        }
-        if (sum < EPSILON_1) {
-            sum = 0;
-        }
-        y[e.index] = sum / e.col[e.index];
-        b = y;
-    }
 
-    return B0T_solver.solve(b.transpose()).transpose();
+        double b_eta = b(e.index);
+        b(e.index) = 0;
+        double new_b_eta = (b_eta - b.dot(e.col)) / e.col(e.index);
+        b(e.index) = abs(new_b_eta) < EPSILON_1 ? 0.0 : new_b_eta;
+    }
+    y = B0T_solver.solve(b.transpose()).transpose();
+    return (y.array().abs() < EPSILON_1).select(0.0, y);
 }
 
-VectorXd Simplex::solve_ftran(VectorXd a) {
+VectorXd Simplex::solve_ftran(const VectorXd& a) {
     VectorXd d = B0_solver.solve(a);
 
+    d = (d.array().abs() < EPSILON_1).select(0.0, d);
     for (const auto& e : eta_vector) {
-        a = d;
-        if (std::abs(e.col(e.index)) < EPSILON_1) {
-            println("error division by 0 on ftran");
-            continue;
-        }
-        double d_eta = a[e.index] / e.col(e.index);
-        d[e.index] = d_eta;
-        for (size_t j = 0; j < static_cast<size_t>(m); j++) {
-            if (j != e.index) {
-                d[j] = a[j] - (e.col(j) * d_eta);
-                if (abs(d[j]) < EPSILON_1) {
-                    d[j] = 0;
-                }
-            }
-        }
+        double d_eta = d(e.index) / e.col(e.index);
+
+        d -= e.col * d_eta;
+        d(e.index) = d_eta;
+
+        d = (d.array().abs() < EPSILON_1).select(0.0, d);
     }
 
     return d;
