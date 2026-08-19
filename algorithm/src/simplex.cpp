@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <cmath>
 #include <cstdlib>
 #include <limits>
@@ -129,7 +130,7 @@ Solution Simplex::solve() {
             update_basis(leaving.leaving_b_idx.value(), entering.index);
             eta_vector.push_back({.col = d, .index = leaving.leaving_b_idx.value()});
 
-        } else if (p.verbose) {
+        } else {
             basis_changed = false;
             if (p.verbose) {
                 println("[Bound Hit] Entering variable x_{} hit its bound at t = {:.6f}; no pivot.", entering_var,
@@ -214,72 +215,106 @@ LeavingVariableInfo Simplex::choose_leaving_variable(const VectorXd& d, size_t e
 
     // CALCULATING STEP(T) OF ENTERING NON BASIC VARIABLE X_N
     double entering_dir = (reduced_cost > 0) ? 1.0 : -1.0;
-    double x_n_t = 0;
+    double x_n_t = pInf;
 
     // If entering_dir or reduced_cost > 0
     // x_N has to increase
     // else x_N has to decrease
-    if (entering_dir > 0) {
+    if (entering_dir > EPSILON_1) {
         x_n_t = ub[entering_var] - x[entering_var];
     } else {
         x_n_t = x[entering_var] - lb[entering_var];
     }
+    x_n_t = std::max(0.0, x_n_t);
 
     // CALCULATING STEP(T) OF BASIC VARIABLES X_B
+    // MIN_PIVOT is only a divide-by-zero guard, NOT a conditioning filter -
+    // conditioning is handled by the second pass below (Harris-style ratio test).
+    constexpr double MIN_PIVOT = 1e-11;
     auto get_basic_t_limit = [&](int i) -> double {
         // Basic variables update according to: x_B = x_B - d_i * (t * entering_dir).
         // When (d_i * entering_dir > 0): x_n INCREASES, so x_B DECREASES, so it moves toward its lower bound (lb).
         // When (d_i * entering_dir < 0): x_n DECREASES, so x_B INCREASES, so it moves toward its upper bound (ub).
         double d_i = d[i];
-        if (std::abs(d_i) <= EPSILON_1) {
+        if (std::abs(d_i) <= MIN_PIVOT) {
             return pInf;
         }
 
         size_t basic_var = basic_idx[i];
 
-        bool decreases = (d_i * entering_dir > 0);
+        bool decreases = (d_i * entering_dir > EPSILON_1);
         double t = 0;
         if (decreases) {
-            t = (x[basic_var] - lb[basic_var]) / std::abs(d_i);
+            if (lb[basic_var] > nInf + EPSILON_1) {
+                t = (x[basic_var] - lb[basic_var]) / std::abs(d_i);
+                return std::max(0.0, t);
+            }
+        } else if (ub[basic_var] < pInf - EPSILON_1) {
+            t = (ub[basic_var] - x[basic_var]) / std::abs(d_i);
             return std::max(0.0, t);
         }
-        t = (ub[basic_var] - x[basic_var]) / std::abs(d_i);
-        return std::max(0.0, t);
+        return pInf;
     };
 
-    double t = pInf;
-    int leaving_b_idx = -1;
-    size_t smallest_var_idx = std::numeric_limits<size_t>::max();
-
+    // PASS 1: find the true minimum ratio (t_min), ignoring pivot conditioning.
+    double t_min = x_n_t;
     for (int i = 0; i < m; i++) {
         double x_b_t = get_basic_t_limit(i);
-
         if (p.verbose) {
             println("  Basic x_{} (slot {}): val = {:.6f}, step_limit = {:.6f}", basic_idx[i], i, x[basic_idx[i]],
                     x_b_t);
         }
+        t_min = std::min(t_min, x_b_t);
+    }
 
-        bool smaller = (x_b_t < t - EPSILON_1);
-        bool tie = (std::abs(x_b_t - t) < EPSILON_1);
+    if (p.verbose) {
+        println("x_n_t: {}", x_n_t);
+        println("t_min: {}", t_min);
+    }
 
-        if (smaller) {
-            t = x_b_t;
-            leaving_b_idx = i;
-            smallest_var_idx = basic_idx[i];
-        } else if (tie && basic_idx[i] < smallest_var_idx) {
-            // smallest index rule
+    if (t_min >= pInf - EPSILON_1) {
+        throw std::runtime_error("Problem Unbounded");
+    }
+
+    // PASS 2 (Harris-style tie-break): among every row whose ratio ties the
+    // minimum within EPSILON_1, choose the one with the LARGEST pivot
+    // magnitude. This avoids locking in a numerically marginal pivot when a
+    // better-conditioned row would give the same (or an equally valid) step.
+    int leaving_b_idx = -1;
+    double best_pivot_mag = -1.0;
+    size_t smallest_var_idx = std::numeric_limits<size_t>::max();
+
+    for (int i = 0; i < m; i++) {
+        double x_b_t = get_basic_t_limit(i);
+        if (x_b_t > t_min + EPSILON_1) {
+            continue;
+        }
+
+        double pivot_mag = std::abs(d[i]);
+        bool better = (pivot_mag > best_pivot_mag + EPSILON_1);
+        bool tie = (std::abs(pivot_mag - best_pivot_mag) <= EPSILON_1);
+
+        if (better || (tie && basic_idx[i] < smallest_var_idx)) {
+            best_pivot_mag = pivot_mag;
             leaving_b_idx = i;
             smallest_var_idx = basic_idx[i];
         }
     }
-    if (t >= pInf - EPSILON_1) {
-        throw std::runtime_error("Initial UMFPACK factorization of B0 failed");
-    }
 
-    // UPDATING VARIABLES
-    if (x_n_t < t - EPSILON_1) {
+    double t = t_min;
+    // Prefer flipping the entering variable to its own bound (no pivot at
+    // all) whenever that ties the minimum ratio - it's always the safest,
+    // best-conditioned option since it doesn't touch B0.
+    if (x_n_t <= t_min + EPSILON_1) {
         t = x_n_t;
         leaving_b_idx = -1;
+    }
+
+    if (leaving_b_idx != -1 && best_pivot_mag < 1e-4) {
+        // Diagnostic only: even the best-conditioned tied candidate is small.
+        // Not necessarily a problem, but worth knowing about.
+        println("[Warning] Small best-available pivot at iteration {}: x_{} leaving, |d_i| = {:.3e}", iteration,
+                basic_idx[leaving_b_idx], best_pivot_mag);
     }
 
     auto force_lb_ub = [&](int entering_var) {
@@ -307,6 +342,7 @@ LeavingVariableInfo Simplex::choose_leaving_variable(const VectorXd& d, size_t e
     result.step_length = t;
     result.leaving_b_idx = (leaving_b_idx != -1) ? std::optional<size_t>(leaving_b_idx) : std::nullopt;
 
+    // getchar();
     return result;
 }
 
@@ -371,6 +407,7 @@ RowVectorXd Simplex::solve_btran(RowVectorXd b) {
 VectorXd Simplex::solve_ftran(const VectorXd& a) {
     VectorXd d = B0_solver.solve(a);
 
+    d = (d.array().abs() < EPSILON_1).select(0.0, d);
     for (const auto& e : eta_vector) {
         double d_eta = d(e.index) / e.col(e.index);
 
@@ -400,8 +437,8 @@ void Simplex::it_log() const {
     println("x_n: {}", streamed(x_n.transpose()));
     println("basic_idx: {}", basic_idx);
     println("nonbasic_idx: {}", nonbasic_idx);
+    getchar();
 }
-
 void Simplex::refactorization() {
     B0.resize(m, m);
     B0.setZero();
@@ -460,7 +497,6 @@ void Simplex::init_phase_0() {
     VectorXd rhs = mps.b - N * x_n;
     VectorXd x_b = B0_solver.solve(rhs);
 
-    // Assign computed basic values back into x
     for (int i = 0; i < m; i++) {
         x[basic_idx[i]] = x_b[i];
     }
@@ -474,16 +510,16 @@ void Simplex::init_phase_0() {
 
         // if x_b < lb we have to increase the variable until lb
         // so the new lb will be -inf and the ub will be the lb
-        if (x_val < lb[x_i] - EPSILON_1) {
+        if (x_val < mps.lb[x_i] - EPSILON_1) {
             c[x_i] = 1;
-            auto temp = lb[x_i];
+            auto temp = mps.lb[x_i];
             lb[x_i] = nInf;
             ub[x_i] = temp;
-        } else if (x_val > ub[x_i] + EPSILON_1) {
+        } else if (x_val > mps.ub[x_i] + EPSILON_1) {
             // if x_b > ub we have to decrease the variable until ub
             // so the new lb will be the ub and the ub will be inf
             c[x_i] = -1;
-            auto temp = ub[x_i];
+            auto temp = mps.ub[x_i];
             ub[x_i] = pInf;
             lb[x_i] = temp;
         }

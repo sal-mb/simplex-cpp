@@ -38,12 +38,12 @@ int main(int argc, char* argv[]) {
     auto start = std::chrono::high_resolution_clock::now();
     Solution s = solver_p0.solve();
     if (p.verbose) {
-        getchar();
         println("Finished Phase 0");
         println("Starting Phase 1 with: \nbasic_idx: {}\nnonbasic_idx: {} \nB:\n{}\nN:\n{}\nx: {}\ncost: {}",
                 s.basic_idx, s.nonbasic_idx, streamed(s.B.toDense()), streamed(s.N.toDense()), s.x, s.cost);
         getchar();
     }
+    println("Finished Phase 0");
     Simplex solver_p1(reader, p, s, 1);
     s = solver_p1.solve();
     auto end = std::chrono::high_resolution_clock::now();
