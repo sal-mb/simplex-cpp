@@ -130,7 +130,7 @@ Solution Simplex::solve() {
             update_basis(leaving.leaving_b_idx.value(), entering.index);
             eta_vector.push_back({.col = d, .index = leaving.leaving_b_idx.value()});
 
-        } else if (p.verbose) {
+        } else {
             basis_changed = false;
             if (p.verbose) {
                 println("[Bound Hit] Entering variable x_{} hit its bound at t = {:.6f}; no pivot.", entering_var,
@@ -228,12 +228,15 @@ LeavingVariableInfo Simplex::choose_leaving_variable(const VectorXd& d, size_t e
     x_n_t = std::max(0.0, x_n_t);
 
     // CALCULATING STEP(T) OF BASIC VARIABLES X_B
+    // MIN_PIVOT is only a divide-by-zero guard, NOT a conditioning filter -
+    // conditioning is handled by the second pass below (Harris-style ratio test).
+    constexpr double MIN_PIVOT = 1e-11;
     auto get_basic_t_limit = [&](int i) -> double {
         // Basic variables update according to: x_B = x_B - d_i * (t * entering_dir).
         // When (d_i * entering_dir > 0): x_n INCREASES, so x_B DECREASES, so it moves toward its lower bound (lb).
         // When (d_i * entering_dir < 0): x_n DECREASES, so x_B INCREASES, so it moves toward its upper bound (ub).
         double d_i = d[i];
-        if (std::abs(d_i) <= EPSILON_1) {
+        if (std::abs(d_i) <= MIN_PIVOT) {
             return pInf;
         }
 
@@ -253,40 +256,65 @@ LeavingVariableInfo Simplex::choose_leaving_variable(const VectorXd& d, size_t e
         return pInf;
     };
 
-    double t = pInf;
-    int leaving_b_idx = -1;
-    size_t smallest_var_idx = std::numeric_limits<size_t>::max();
-
+    // PASS 1: find the true minimum ratio (t_min), ignoring pivot conditioning.
+    double t_min = x_n_t;
     for (int i = 0; i < m; i++) {
         double x_b_t = get_basic_t_limit(i);
-
         if (p.verbose) {
             println("  Basic x_{} (slot {}): val = {:.6f}, step_limit = {:.6f}", basic_idx[i], i, x[basic_idx[i]],
                     x_b_t);
         }
+        t_min = std::min(t_min, x_b_t);
+    }
 
-        bool smaller = (x_b_t < t - EPSILON_1);
-        bool tie = (std::abs(x_b_t - t) < EPSILON_1);
+    if (p.verbose) {
+        println("x_n_t: {}", x_n_t);
+        println("t_min: {}", t_min);
+    }
 
-        if (smaller) {
-            t = x_b_t;
-            leaving_b_idx = i;
-            smallest_var_idx = basic_idx[i];
-        } else if (tie && basic_idx[i] < smallest_var_idx) {
-            // smallest index rule
+    if (t_min >= pInf - EPSILON_1) {
+        throw std::runtime_error("Problem Unbounded");
+    }
+
+    // PASS 2 (Harris-style tie-break): among every row whose ratio ties the
+    // minimum within EPSILON_1, choose the one with the LARGEST pivot
+    // magnitude. This avoids locking in a numerically marginal pivot when a
+    // better-conditioned row would give the same (or an equally valid) step.
+    int leaving_b_idx = -1;
+    double best_pivot_mag = -1.0;
+    size_t smallest_var_idx = std::numeric_limits<size_t>::max();
+
+    for (int i = 0; i < m; i++) {
+        double x_b_t = get_basic_t_limit(i);
+        if (x_b_t > t_min + EPSILON_1) {
+            continue;
+        }
+
+        double pivot_mag = std::abs(d[i]);
+        bool better = (pivot_mag > best_pivot_mag + EPSILON_1);
+        bool tie = (std::abs(pivot_mag - best_pivot_mag) <= EPSILON_1);
+
+        if (better || (tie && basic_idx[i] < smallest_var_idx)) {
+            best_pivot_mag = pivot_mag;
             leaving_b_idx = i;
             smallest_var_idx = basic_idx[i];
         }
     }
-    println("x_n_t: {}", x_n_t);
-    println("t: {}", t);
-    // UPDATING VARIABLES
-    if (x_n_t < t - EPSILON_1) {
+
+    double t = t_min;
+    // Prefer flipping the entering variable to its own bound (no pivot at
+    // all) whenever that ties the minimum ratio - it's always the safest,
+    // best-conditioned option since it doesn't touch B0.
+    if (x_n_t <= t_min + EPSILON_1) {
         t = x_n_t;
         leaving_b_idx = -1;
     }
-    if (t >= pInf - EPSILON_1) {
-        throw std::runtime_error("Problem Unbounded");
+
+    if (leaving_b_idx != -1 && best_pivot_mag < 1e-4) {
+        // Diagnostic only: even the best-conditioned tied candidate is small.
+        // Not necessarily a problem, but worth knowing about.
+        println("[Warning] Small best-available pivot at iteration {}: x_{} leaving, |d_i| = {:.3e}", iteration,
+                basic_idx[leaving_b_idx], best_pivot_mag);
     }
 
     auto force_lb_ub = [&](int entering_var) {
@@ -475,7 +503,6 @@ void Simplex::init_phase_0() {
     VectorXd rhs = mps.b - N * x_n;
     VectorXd x_b = B0_solver.solve(rhs);
 
-    // Assign computed basic values back into x
     for (int i = 0; i < m; i++) {
         x[basic_idx[i]] = x_b[i];
     }
