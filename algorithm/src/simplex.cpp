@@ -358,51 +358,28 @@ void Simplex::update_basis(size_t leaving_basis_idx, size_t entering_nonbasic_id
 }
 
 RowVectorXd Simplex::solve_btran(RowVectorXd b) {
-    RowVectorXd y = b;
-
     for (int i = eta_vector.size() - 1; i >= 0; i--) {
         const EtaMatrix& e = eta_vector[i];
-        double sum = b[e.index];
-        if (std::abs(e.col[e.index]) < EPSILON_1) {
-            println("error: division by 0 on btran");
-            continue;
-        }
-        for (size_t j = 0; j < static_cast<size_t>(m); j++) {
-            if (j != e.index) {
-                sum -= e.col[j] * y[j];
-            }
-        }
-        y[e.index] = sum / e.col[e.index];
-        b = y;
-    }
 
+        double b_eta = b(e.index);
+        b(e.index) = 0;
+        b(e.index) = (b_eta - b.dot(e.col)) / e.col(e.index);
+    }
     return B0T_solver.solve(b.transpose()).transpose();
 }
 
-VectorXd Simplex::solve_ftran(VectorXd a) {
+VectorXd Simplex::solve_ftran(const VectorXd& a) {
     VectorXd d = B0_solver.solve(a);
 
     for (const auto& e : eta_vector) {
-        a = d;
-        if (std::abs(e.col(e.index)) < EPSILON_1) {
-            println("error division by 0 on ftran");
-            continue;
-        }
-        double d_eta = a[e.index] / e.col(e.index);
-        d[e.index] = d_eta;
-        for (size_t j = 0; j < static_cast<size_t>(m); j++) {
-            if (j != e.index) {
-                d[j] = a[j] - (e.col(j) * d_eta);
-                if (abs(d[j]) < EPSILON_1) {
-                    d[j] = 0;
-                }
-            }
-        }
+        double d_eta = d(e.index) / e.col(e.index);
+
+        d -= e.col * d_eta;
+        d(e.index) = d_eta;
     }
 
     return d;
 }
-
 void Simplex::it_log() const {
     println("\n=================== Iteration {} ===================", iteration);
 

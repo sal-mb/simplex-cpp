@@ -74,7 +74,7 @@ class Simplex {
     UmfPackLU<SparseMatrix<double>> B0T_solver;
 
     RowVectorXd solve_btran(RowVectorXd b);
-    VectorXd solve_ftran(VectorXd a);
+    VectorXd solve_ftran(const VectorXd& a);
     void refactorization();
 
     // Core functions
