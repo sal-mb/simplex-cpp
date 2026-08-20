@@ -3,7 +3,6 @@
 #include <limits>
 #include <optional>
 #include <stdexcept>
-#include <tuple>
 #include <vector>
 
 #include "Eigen/Core"
@@ -17,7 +16,7 @@
 using namespace Eigen;
 using namespace fmt;
 
-Simplex::Simplex(const mpsReader& mps, const Params& p, optional<Solution> s, int phase)
+Simplex::Simplex(const mpsReader& mps, const Params& p, std::optional<Solution> s, int phase)
     : mps(mps)
     , p(p)
     , m(mps.n_rows_inq + mps.n_rows_eq)
@@ -38,6 +37,7 @@ Simplex::Simplex(const mpsReader& mps, const Params& p, optional<Solution> s, in
         x = s->x;
 
     } else {
+        // in case of no initial solution provided
         for (int i = 0; i < n; i++) {
             if (i < mps.n_cols) {
                 nonbasic_idx.push_back(i);
@@ -49,7 +49,7 @@ Simplex::Simplex(const mpsReader& mps, const Params& p, optional<Solution> s, in
         N = A.leftCols(mps.n_cols);
     }
 
-    // Initialize persistent basic cost vector c_b
+    // init c_b
     for (int i = 0; i < m; ++i) {
         c_b[i] = c[basic_idx[i]];
     }
@@ -62,7 +62,7 @@ Simplex::Simplex(const mpsReader& mps, const Params& p, optional<Solution> s, in
     }
 }
 
-Solution Simplex::solve() {
+Solution Simplex::solve() { // NOLINT
     iteration = 0;
     basis_changed = true;
 
@@ -75,38 +75,24 @@ Solution Simplex::solve() {
             it_log();
         }
 
-        auto entering = choose_entering_variable();
+        EnteringVariableInfo entering = choose_entering_variable();
+
         if (entering.optimal) {
-            if (phase == 0) {
-                double infeasibility = 0.0;
-                for (int i = 0; i < m; ++i) {
-                    size_t var = basic_idx[i];
-                    if (x[var] < mps.lb[var] - EPSILON_1) {
-                        infeasibility += (mps.lb[var] - x[var]);
-                    } else if (x[var] > mps.ub[var] + EPSILON_1) {
-                        infeasibility += (x[var] - mps.ub[var]);
-                    }
-                }
-                if (infeasibility > EPSILON_1) {
-                    throw std::runtime_error("Problem is Infeasible in Phase 0");
-                }
+            if (phase == 0 && compute_infeasibility() > p.eps) {
+                throw std::runtime_error("Problem is Infeasible in Phase 0");
             }
             if (p.verbose) {
                 println("Finished Phase {} with {} iterations", phase, iteration);
                 println("[Status] Optimal solution found.");
                 getchar();
             }
+            // refactoring before returning
             refactorization();
-            Solution s = {.basic_idx = basic_idx,
-                          .nonbasic_idx = nonbasic_idx,
-                          .B = B0,
-                          .N = N,
-                          .x = x,
-                          .cost = -(x.dot(mps.c))};
-            return s;
+            return get_solution();
         }
 
         const size_t entering_var = nonbasic_idx[entering.index];
+
         if (p.verbose) {
             println("[Entering] Selected variable: x_{} (slot: {}, reduced cost: {:.6f})", entering_var, entering.index,
                     entering.reduced_cost);
@@ -120,45 +106,35 @@ Solution Simplex::solve() {
             println("  FTRAN direction d: {}", streamed(d.transpose()));
         }
 
-        auto leaving = choose_leaving_variable(d, entering.index, entering.reduced_cost);
+        LeavingVariableInfo leaving = choose_leaving_variable(d, entering.index, entering.reduced_cost);
 
+        // leaving_b_idx is an optional, if it doesnt have a value it means bound snap
         if (leaving.leaving_b_idx) {
             if (p.verbose) {
                 println("[Pivot] Step length t = {:.6f}", leaving.step_length);
             }
             update_basis(leaving.leaving_b_idx.value(), entering.index);
             eta_vector.push_back({.col = d, .index = leaving.leaving_b_idx.value()});
-
         } else if (p.verbose) {
-            basis_changed = false;
-            if (p.verbose) {
-                println("[Bound Hit] Entering variable x_{} hit its bound at t = {:.6f}; no pivot.", entering_var,
-                        leaving.step_length);
-            }
+            println("[Bound Hit] Entering variable x_{} hit its bound at t = {:.6f}; no pivot.", entering_var,
+                    leaving.step_length);
         }
-        iteration++;
 
-        if ((iteration % REFACTOR_PERIOD) == 0) {
+        // ETA refactorization
+        if (!eta_vector.empty() && eta_vector.size() == p.refactor_period) {
             if (p.verbose) {
                 println("[Refactorization] Refactorizing basis at iteration {}", iteration);
             }
-
             refactorization();
         }
 
-        if (p.verbose) {
-            println("\nPress Enter to continue...");
-            // getchar();
-        }
+        iteration++;
     }
-
-    return {};
 }
 
 EnteringVariableInfo Simplex::choose_entering_variable() {
     auto is_candidate = [this](double red_cost, double x_val, size_t x_i) {
-        return (red_cost > EPSILON_1 && x_val < ub[x_i] - EPSILON_1) ||
-               (red_cost < -EPSILON_1 && x_val > lb[x_i] + EPSILON_1);
+        return (red_cost > p.eps && x_val < ub[x_i] - p.eps) || (red_cost < -p.eps && x_val > lb[x_i] + p.eps);
         // candidate conditions:
         // if reduced cost > 0, and x_val can increase (increases obj value)
         // if reduced cost < 0, and x_val can decrease (also increases obj value)
@@ -181,6 +157,7 @@ EnteringVariableInfo Simplex::choose_entering_variable() {
 
     for (size_t i = 0; i < nonbasic_idx.size(); i++) {
         auto x_i = nonbasic_idx[i];
+        // force bland's rule
         if (x_i > smallest_x) {
             continue;
         }
@@ -189,7 +166,8 @@ EnteringVariableInfo Simplex::choose_entering_variable() {
         double red_cost = c[x_i] - A.col(x_i).dot(y.transpose());
 
         if (p.verbose) {
-            println("  Nonbasic x_{} (slot {}): val = {:.6f}, red_cost = {:.6f}", x_i, i, x_val, red_cost);
+            println("  Nonbasic x_{} (slot {}): val = {}, red_cost = {}, lb = {}, ub = {}", x_i, i, x_val, red_cost,
+                    lb[x_i], ub[x_i]);
         }
 
         if (is_candidate(red_cost, x_val, x_i)) {
@@ -203,54 +181,43 @@ EnteringVariableInfo Simplex::choose_entering_variable() {
     return result;
 }
 
-LeavingVariableInfo Simplex::choose_leaving_variable(const VectorXd& d, size_t entering_nonbasic_slot,
+LeavingVariableInfo Simplex::choose_leaving_variable(const VectorXd& d, size_t entering_nonbasic_slot, // NOLINT
                                                      double reduced_cost) {
     if (p.verbose) {
         println("\n--- Choosing Leaving Variable ---");
     }
 
-    LeavingVariableInfo result;
-    size_t entering_var = nonbasic_idx[entering_nonbasic_slot];
+    const size_t entering_var = nonbasic_idx[entering_nonbasic_slot];
 
-    // CALCULATING STEP(T) OF ENTERING NON BASIC VARIABLE X_N
-    double entering_dir = (reduced_cost > 0) ? 1.0 : -1.0;
-    double x_n_t = 0;
+    // entering_dir > 0: x_N has to increase. entering_dir < 0: x_N has to decrease.
+    const double entering_dir = (reduced_cost > 0) ? 1.0 : -1.0;
 
-    // If entering_dir or reduced_cost > 0
-    // x_N has to increase
-    // else x_N has to decrease
-    if (entering_dir > 0) {
-        x_n_t = ub[entering_var] - x[entering_var];
-    } else {
-        x_n_t = x[entering_var] - lb[entering_var];
-    }
+    // How far the entering variable can move on its own before hitting its opposite bound.
+    const double entering_self_limit =
+            (entering_dir > 0) ? (ub[entering_var] - x[entering_var]) : (x[entering_var] - lb[entering_var]);
 
-    // CALCULATING STEP(T) OF BASIC VARIABLES X_B
-    auto get_basic_t_limit = [&](int i) -> double {
-        // Basic variables update according to: x_B = x_B - d_i * (t * entering_dir).
-        // When (d_i * entering_dir > 0): x_n INCREASES, so x_B DECREASES, so it moves toward its lower bound (lb).
-        // When (d_i * entering_dir < 0): x_n DECREASES, so x_B INCREASES, so it moves toward its upper bound (ub).
-        double d_i = d[i];
-        if (std::abs(d_i) <= EPSILON_1) {
+    // Basic variables update according to: x_B = x_B - d_i * (t * entering_dir).
+    // When (d_i * entering_dir > 0): x_N INCREASES, so x_B DECREASES, moving toward its lb.
+    // When (d_i * entering_dir < 0): x_N DECREASES, so x_B INCREASES, moving toward its ub.
+    auto basic_variable_limit = [&](int i) -> double {
+        const double d_i = d[i];
+        if (std::abs(d_i) <= p.eps) {
             return pInf;
         }
 
-        size_t basic_var = basic_idx[i];
+        const size_t basic_var = basic_idx[i];
+        const bool decreases = (d_i * entering_dir > 0);
 
-        bool decreases = (d_i * entering_dir > 0);
-        double t = 0;
         if (decreases) {
-            if (lb[basic_var] < nInf + EPSILON_1) {
-                return pInf;
+            if (lb[basic_var] <= nInf + p.eps) {
+                return pInf; // unbounded below: never hits a lower bound
             }
-            t = (x[basic_var] - lb[basic_var]) / std::abs(d_i);
-            return std::max(0.0, t);
+            return std::max(0.0, (x[basic_var] - lb[basic_var]) / std::abs(d_i));
         }
-        if (ub[basic_var] > pInf - EPSILON_1) {
-            return pInf;
+        if (ub[basic_var] >= pInf - p.eps) {
+            return pInf; // unbounded above: never hits an upper bound
         }
-        t = (ub[basic_var] - x[basic_var]) / std::abs(d_i);
-        return std::max(0.0, t);
+        return std::max(0.0, (ub[basic_var] - x[basic_var]) / std::abs(d_i));
     };
 
     double t = pInf;
@@ -258,21 +225,22 @@ LeavingVariableInfo Simplex::choose_leaving_variable(const VectorXd& d, size_t e
     size_t smallest_var_idx = std::numeric_limits<size_t>::max();
 
     for (int i = 0; i < m; i++) {
-        double x_b_t = get_basic_t_limit(i);
+        double limit = basic_variable_limit(i);
 
         if (p.verbose) {
             println("  Basic x_{} (slot {}): val = {:.6f}, step_limit = {:.6f}", basic_idx[i], i, x[basic_idx[i]],
-                    x_b_t);
+                    limit);
         }
-        if (x_b_t > pInf - EPSILON_1) {
+        if (limit >= pInf - p.eps) {
             continue;
         }
 
-        bool smaller = (x_b_t < t - EPSILON_1);
-        bool tie = (std::abs(x_b_t - t) < EPSILON_1);
+        // if tie, break by bland's rule
+        bool smaller = (limit < t - p.eps);
+        bool tie = (std::abs(limit - t) < p.eps);
 
         if (smaller) {
-            t = x_b_t;
+            t = limit;
             leaving_b_idx = i;
             smallest_var_idx = basic_idx[i];
         } else if (tie && basic_idx[i] < smallest_var_idx) {
@@ -282,31 +250,34 @@ LeavingVariableInfo Simplex::choose_leaving_variable(const VectorXd& d, size_t e
         }
     }
 
-    // UPDATING VARIABLES
-    if (x_n_t < t - EPSILON_1) {
-        t = x_n_t;
+    // bound flip leaving var
+    if (entering_self_limit < t - p.eps) {
+        t = entering_self_limit;
         leaving_b_idx = -1;
     }
 
-    if (t >= pInf - EPSILON_1) {
+    if (t >= pInf - p.eps) {
         throw std::runtime_error("Problem Unbounded");
     }
 
-    auto force_lb_ub = [&](int entering_var) {
-        if (std::abs(x[entering_var] - lb[entering_var]) < EPSILON_1) {
-            x[entering_var] = lb[entering_var];
-        } else if (std::abs(x[entering_var] - ub[entering_var]) < EPSILON_1) {
-            x[entering_var] = ub[entering_var];
+    // try to solve numerical issue
+    auto snap_to_bound = [&](size_t var) {
+        if (std::abs(x[var] - lb[var]) < p.eps) {
+            x[var] = lb[var];
+        } else if (std::abs(x[var] - ub[var]) < p.eps) {
+            x[var] = ub[var];
         }
     };
+
+    // updating vars
     x[entering_var] += t * entering_dir;
-    force_lb_ub(entering_var);
+    snap_to_bound(entering_var);
 
     for (int i = 0; i < m; i++) {
         size_t basic_var = basic_idx[i];
 
         x[basic_var] -= d[i] * t * entering_dir;
-        force_lb_ub(basic_var);
+        snap_to_bound(basic_var);
 
         if (p.verbose) {
             println("  Updated x_{}: val = {:.6f}, t = {:.6f}, d_i = {:.6f}, red_cost = {:.6f}", basic_var,
@@ -314,9 +285,9 @@ LeavingVariableInfo Simplex::choose_leaving_variable(const VectorXd& d, size_t e
         }
     }
 
+    LeavingVariableInfo result;
     result.step_length = t;
     result.leaving_b_idx = (leaving_b_idx != -1) ? std::optional<size_t>(leaving_b_idx) : std::nullopt;
-
     return result;
 }
 
@@ -341,23 +312,13 @@ void Simplex::update_basis(size_t leaving_basis_idx, size_t entering_nonbasic_id
     N.col(entering_nonbasic_idx) = A.col(leaving_var);
 
     if (phase == 0) {
-        auto entering_val = x[entering_var];
-        if (entering_val < mps.lb[entering_var] - EPSILON_1) {
-            c[entering_var] = 1;
-            lb[entering_var] = nInf;
-            ub[entering_var] = mps.lb[entering_var];
-        } else if (entering_val > mps.ub[entering_var] + EPSILON_1) {
-            c[entering_var] = -1;
-            ub[entering_var] = pInf;
-            lb[entering_var] = mps.ub[entering_var];
+        // update bounds and c value of the entering and leaving var
+        update_phase_0_costs(entering_var);
+        for (int i = 0; i < m; i++) {
+            update_phase_0_costs(basic_idx[i]);
         }
-
-        c[leaving_var] = 0;
-        ub[leaving_var] = mps.ub[leaving_var];
-        lb[leaving_var] = mps.lb[leaving_var];
+        update_phase_0_costs(leaving_var);
     }
-    // println("entenring var: {}, leaving var {}", entering_var, leaving_var);
-    // getchar();
 
     c_b[leaving_basis_idx] = c[entering_var];
 
@@ -366,7 +327,7 @@ void Simplex::update_basis(size_t leaving_basis_idx, size_t entering_nonbasic_id
 }
 
 RowVectorXd Simplex::solve_btran(RowVectorXd b) {
-    for (int i = eta_vector.size() - 1; i >= 0; i--) {
+    for (int i = static_cast<int>(eta_vector.size()) - 1; i >= 0; i--) {
         const EtaMatrix& e = eta_vector[i];
 
         double b_eta = b(e.index);
@@ -388,6 +349,7 @@ VectorXd Simplex::solve_ftran(const VectorXd& a) {
 
     return d;
 }
+
 void Simplex::it_log() const {
     println("\n=================== Iteration {} ===================", iteration);
 
@@ -424,7 +386,6 @@ void Simplex::refactorization() {
     if (B0_solver.info() != Eigen::Success) {
         println("\n!!! UMFPACK FAILED !!!");
 
-        // teste rápido para confirmar singularidade
         FullPivLU<MatrixXd> lu(B0.toDense());
         println("rank(B0) = {}", lu.rank());
         println("rows(B0) = {}, cols(B0) = {}", B0.rows(), B0.cols());
@@ -436,63 +397,79 @@ void Simplex::refactorization() {
 }
 
 void Simplex::init_phase_0() {
+    // finding inital basic feasible solution
     if (p.verbose) {
         println("PHASE 0");
     }
-    // initializng x
+
+    // assign the variables to its own bounds
     for (int i = 0; i < mps.n_cols; i++) {
         auto var = nonbasic_idx[i];
-        // var with upper and lower bound
-        if (ub[var] < pInf - EPSILON_1 && lb[var] > nInf + EPSILON_1) {
-            x[var] = lb[var];
-            continue;
-        }
 
-        // var with upper bound
-        if (ub[var] < pInf - EPSILON_1) {
+        if (lb[var] > nInf + p.eps) {
+            x[var] = lb[var];
+        } else if (ub[var] < pInf - p.eps) {
             x[var] = ub[var];
-            continue;
-        }
-
-        // var with lower bound
-        if (lb[var] > nInf + EPSILON_1) {
+        } else if (lb[var] > nInf + p.eps && ub[var] < pInf - p.eps) {
             x[var] = lb[var];
-            continue;
+        } else {
+            x[var] = 0;
         }
-        // free var
-        x[var] = 0;
     }
 
+    // finding initial x_b
     VectorXd x_n = x.topRows(mps.n_cols);
-
     VectorXd rhs = mps.b - N * x_n;
     VectorXd x_b = B0_solver.solve(rhs);
-
-    // Assign computed basic values back into x
     for (int i = 0; i < m; i++) {
         x[basic_idx[i]] = x_b[i];
     }
 
-    // initializing c vector
+    // build c vector
     c = VectorXd::Zero(n);
-
     for (int i = 0; i < m; i++) {
-        auto x_i = basic_idx[i];
-        auto x_val = x[x_i];
-
-        // if x_b < lb we have to increase the variable until lb
-        // so the new lb will be -inf and the ub will be the lb
-        if (x_val < lb[x_i] - EPSILON_1) {
-            c[x_i] = 1;
-            lb[x_i] = nInf;
-            ub[x_i] = mps.lb[x_i];
-        } else if (x_val > mps.ub[x_i] + EPSILON_1) {
-            // if x_b > ub we have to decrease the variable until ub
-            // so the new lb will be the ub and the ub will be inf
-            c[x_i] = -1;
-            ub[x_i] = pInf;
-            lb[x_i] = mps.ub[x_i];
-        }
-        c_b[i] = c[x_i];
+        update_phase_0_costs(basic_idx[i]);
+        c_b[i] = c[basic_idx[i]];
     }
+}
+
+void Simplex::update_phase_0_costs(size_t var) {
+    double val = x[var];
+
+    if (val < mps.lb[var] - p.eps) {
+        // below its true lower bound: temporarily allow it to range up to lb, and reward
+        // increasing it (that's the direction that restores feasibility).
+        c[var] = 1;
+        lb[var] = nInf;
+        ub[var] = mps.lb[var];
+    } else if (val > mps.ub[var] + p.eps) {
+        // above its true upper bound, temporarily allow it to range down to ub, and
+        // reward decreasing it.
+        c[var] = -1;
+        ub[var] = pInf;
+        lb[var] = mps.ub[var];
+    } else {
+        // within its true bounds, so no penalty, restore to true bounds.
+        c[var] = 0;
+        lb[var] = mps.lb[var];
+        ub[var] = mps.ub[var];
+    }
+}
+
+double Simplex::compute_infeasibility() const {
+    double infeasibility = 0.0;
+    for (int i = 0; i < m; ++i) {
+        size_t var = basic_idx[i];
+        if (x[var] < mps.lb[var]) {
+            infeasibility += (mps.lb[var] - x[var]);
+        } else if (x[var] > mps.ub[var]) {
+            infeasibility += (x[var] - mps.ub[var]);
+        }
+    }
+    return infeasibility;
+}
+
+Solution Simplex::get_solution() const {
+    return Solution{
+            .basic_idx = basic_idx, .nonbasic_idx = nonbasic_idx, .B = B0, .N = N, .x = x, .cost = x.dot(mps.c)};
 }

@@ -9,11 +9,8 @@
 #include "mps_reader.hpp"
 #include "params.hpp"
 
-using namespace Eigen;
-using namespace std;
-
 struct EtaMatrix {
-    VectorXd col;
+    Eigen::VectorXd col;
     size_t index;
 };
 
@@ -25,21 +22,21 @@ struct EnteringVariableInfo {
 
 struct LeavingVariableInfo {
     double step_length{0.0};
-    optional<size_t> leaving_b_idx;
+    std::optional<size_t> leaving_b_idx;
 };
 
 struct Solution {
-    vector<size_t> basic_idx;
-    vector<size_t> nonbasic_idx;
-    SparseMatrix<double> B;
-    SparseMatrix<double> N;
-    VectorXd x;
+    std::vector<size_t> basic_idx;
+    std::vector<size_t> nonbasic_idx;
+    Eigen::SparseMatrix<double> B;
+    Eigen::SparseMatrix<double> N;
+    Eigen::VectorXd x;
     double cost;
 };
 
 class Simplex {
    public:
-    Simplex(const mpsReader& mps, const Params& p, optional<Solution> initial, int phase);
+    Simplex(const mpsReader& mps, const Params& p, std::optional<Solution> s, int phase);
 
     Solution solve();
 
@@ -51,45 +48,48 @@ class Simplex {
     int iteration{0};
     int phase{1};
 
-    SparseMatrix<double> A;
-    SparseMatrix<double> B0;
-    SparseMatrix<double> B0T;
-    SparseMatrix<double> N;
-    VectorXd ub, lb;
-    VectorXd c;
+    Eigen::SparseMatrix<double> A;
+    Eigen::SparseMatrix<double> B0;
+    Eigen::SparseMatrix<double> B0T;
+    Eigen::SparseMatrix<double> N;
+    Eigen::VectorXd ub, lb;
+    Eigen::VectorXd c;
 
     // SOLUTION
-    VectorXd x;
-    vector<size_t> basic_idx;
-    vector<size_t> nonbasic_idx;
+    Eigen::VectorXd x;
+    std::vector<size_t> basic_idx;
+    std::vector<size_t> nonbasic_idx;
 
     // Context cache for solving
-    VectorXd c_b;
-    RowVectorXd y;
+    Eigen::VectorXd c_b;
+    Eigen::RowVectorXd y;
     bool basis_changed{true};
 
     // ETA related
-    vector<EtaMatrix> eta_vector;
-    UmfPackLU<SparseMatrix<double>> B0_solver;
-    UmfPackLU<SparseMatrix<double>> B0T_solver;
+    std::vector<EtaMatrix> eta_vector;
+    Eigen::UmfPackLU<Eigen::SparseMatrix<double>> B0_solver;
+    Eigen::UmfPackLU<Eigen::SparseMatrix<double>> B0T_solver;
 
-    RowVectorXd solve_btran(RowVectorXd b);
-    VectorXd solve_ftran(const VectorXd& a);
+    Eigen::RowVectorXd solve_btran(Eigen::RowVectorXd b);
+    Eigen::VectorXd solve_ftran(const Eigen::VectorXd& a);
     void refactorization();
 
     // Core functions
     EnteringVariableInfo choose_entering_variable();
-    LeavingVariableInfo choose_leaving_variable(const VectorXd& d, size_t entering_nonbasic_slot, double reduced_cost);
+    LeavingVariableInfo choose_leaving_variable(const Eigen::VectorXd& d, size_t entering_nonbasic_slot,
+                                                double reduced_cost);
 
     // Basis change
     void update_basis(size_t leaving_basis_idx, size_t entering_nonbasic_idx);
 
     // Phase 0
     void init_phase_0();
-    void update_phase_0_costs();
+
+    // sets c and ub/lb for the var
+    void update_phase_0_costs(size_t var);
     double compute_infeasibility() const;
 
     // misc
-    Solution get_solution();
+    Solution get_solution() const;
     void it_log() const;
 };

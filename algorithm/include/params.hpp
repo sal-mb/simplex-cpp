@@ -15,11 +15,13 @@ struct Params {
     /// Random seed (-1 for random), for reproducible experiments
     int seed = -1;
 
+    /// Epsilon for dealing with numeric precision
+    double eps = 1e-5;
+
+    size_t refactor_period = 20;
+
     /// Enable verbose output
     bool verbose{false};
-
-    // ---- future parameters go here ----
-    // e.g. presolve, simplex method choice, tolerances, max iterations
 
     static Params& get() {
         static Params instance;
@@ -33,12 +35,15 @@ struct Params {
         cxxopts::Options options("dracula", "Simplex solver for QPS/MPS instances");
         options.positional_help("instance").show_positional_help();
 
-        options.add_options()("instance", "Instance file (positional)",
-                              cxxopts::value<std::string>())(
-            "p,preprocess", "Apply geometric scaling preprocess")(
-            "s,seed", "Random seed (-1 for random)",
-            cxxopts::value<int>()->default_value(std::to_string(p.seed)))(
-            "v,verbose", "Enable verbose output")("h,help", "Print help message");
+        options.add_options()("instance", "Instance file (positional)", cxxopts::value<std::string>())(
+                "p,preprocess", "Apply geometric scaling preprocess")(
+                "s,seed", "Random seed (-1 for random)", cxxopts::value<int>()->default_value(std::to_string(p.seed)))(
+                "e,epsilon", "Epsilon for arithmetic computations",
+                cxxopts::value<double>()->default_value(std::to_string(p.eps)))
+
+                ("r,refactor_period", "How many eta matrices needed until refactoring",
+                 cxxopts::value<size_t>()->default_value(std::to_string(p.refactor_period)))(
+                        "v,verbose", "Enable verbose output")("h,help", "Print help message");
 
         options.parse_positional({"instance"});
         auto result = options.parse(argc, argv);
@@ -51,6 +56,8 @@ struct Params {
         p.instance_file = result["instance"].as<std::string>();
         p.preprocess = result.count("preprocess") > 0;
         p.seed = result["seed"].as<int>();
+        p.eps = result["epsilon"].as<double>();
+        p.refactor_period = result["refactor_period"].as<size_t>();
         p.verbose = result.count("verbose") > 0;
 
         if (p.verbose) {
@@ -58,6 +65,7 @@ struct Params {
             fmt::print("  INSTANCE: {}\n", p.instance_file);
             fmt::print("  PREPROCESS: {}\n", p.preprocess);
             fmt::print("  SEED: {}\n", p.seed);
+            fmt::print("  EPSILON: {}\n", p.eps);
         }
     }
 };

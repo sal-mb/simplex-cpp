@@ -1,6 +1,7 @@
 #include <Eigen/Dense>
 #include <Eigen/IterativeLinearSolvers>
 #include <Eigen/Sparse>
+#include <chrono>
 #include <fmt/core.h>
 #include <fmt/format.h>
 #include <fmt/ostream.h>
@@ -28,17 +29,11 @@ int main(int argc, char* argv[]) {
     println("Problem: {}", reader.Name);
     println("Rows: {}, Cols: {}", reader.n_rows, reader.n_cols);
     println("m: {}, n: {}", m, n);
-    // println("A:\n{}", streamed(reader.A));
-    // println("b:\n{}", streamed(reader.b.transpose()));
-    // println("c:\n{}", streamed(reader.c.transpose()));
-    // println("lb:\n{}", streamed(reader.lb.transpose()));
-    // println("ub:\n{}", streamed(reader.ub.transpose()));
 
-    Simplex solver_p0(reader, p, nullopt, 0);
+    Simplex solver_p0(reader, p, std::nullopt, 0);
     auto start = std::chrono::high_resolution_clock::now();
     Solution s = solver_p0.solve();
     if (p.verbose) {
-        println("Finished Phase 0");
         println("Starting Phase 1 with: \nbasic_idx: {}\nnonbasic_idx: {} \nB:\n{}\nN:\n{}\nx: {}\ncost: {}",
                 s.basic_idx, s.nonbasic_idx, streamed(s.B.toDense()), streamed(s.N.toDense()), s.x, s.cost);
         getchar();
