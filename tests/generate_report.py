@@ -1,9 +1,77 @@
+"""
+run_simplex.py
+===============
+Gera um relatório Excel (.xlsx) a partir dos resultados de um grid search do
+algoritmo Simplex, comparando o custo obtido em cada execução com o valor
+ótimo de referência da biblioteca Netlib.
+
+Uso:
+    python run_simplex.py
+    python run_simplex.py --csv resultados_grid_search.csv --output Relatorio.xlsx
+    python run_simplex.py --tolerance 1e-5
+
+Critério de cor (aplicado em todas as abas):
+    Verde   -> execução com SUCCESS e custo bate com o valor ótimo (dentro da tolerância)
+    Amarelo -> execução com SUCCESS mas custo diferente do valor ótimo
+    Vermelho -> qualquer status diferente de SUCCESS (erro, timeout, etc.)
+
+Nas abas de resumo, "sucesso" conta apenas quando o resultado é ótimo (verde).
+Um teste que apenas "rodou sem erro" mas com valor errado não é contado como
+sucesso -- é tratado como parcial (amarelo).
+"""
+
+import argparse
+import logging
 import re
-import openpyxl
-import pandas as pd
+import sys
+from pathlib import Path
+
 import numpy as np
-from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+import pandas as pd
+from openpyxl.styles import Alignment, Font, PatternFill
 from openpyxl.utils import get_column_letter
+from openpyxl.worksheet.worksheet import Worksheet
+
+logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
+logger = logging.getLogger(__name__)
+
+# --------------------------------------------------------------------------- #
+# Configuração
+# --------------------------------------------------------------------------- #
+
+DEFAULT_CSV_FILE = "resultados_grid_search.csv"
+DEFAULT_EXCEL_FILE = "Resultados_Simplex_Parametros.xlsx"
+DEFAULT_TOLERANCE = 1e-4  # tolerância relativa para considerar o custo "ótimo"
+
+REQUIRED_COLUMNS = [
+    "Run_ID", "Instance", "Status", "Cost", "Time_Seconds",
+    "Epsilon", "Preprocess", "Seed", "Refactor_Period",
+]
+PARAM_COLS = ["Preprocess", "Seed", "Epsilon_Num", "Refactor_Period"]
+
+GREEN_FILL = PatternFill(start_color="C6EFCE", end_color="C6EFCE", fill_type="solid")   # Sucesso exato
+YELLOW_FILL = PatternFill(start_color="FFEB9C", end_color="FFEB9C", fill_type="solid")  # Parcial / valor errado
+RED_FILL = PatternFill(start_color="FFC7CE", end_color="FFC7CE", fill_type="solid")     # Erro / sem acertos
+
+HEADER_FONT = Font(name="Arial", bold=True, color="FFFFFF")
+HEADER_FILL = PatternFill(start_color="4472C4", end_color="4472C4", fill_type="solid")
+BODY_FONT = Font(name="Arial")
+
+# Formatos numéricos por nome de coluna (aplicados quando a coluna existe na aba)
+NUMBER_FORMATS = {
+    "Cost_Num": "#,##0.0000",
+    "Optimal_Ref": "#,##0.0000",
+    "Abs_Diff": "#,##0.0000",
+    "Rel_Diff": "0.0000%",
+    "Time_Seconds": "0.000",
+    "Tempo_Medio_s": "0.000",
+    "Taxa_Acerto_Otimo": "0.0%",
+    "Epsilon_Num": "0.0E+00",
+}
+
+# --------------------------------------------------------------------------- #
+# Referência Netlib
+# --------------------------------------------------------------------------- #
 
 NETLIB_REFERENCE_DATA = """
 25FV47      822   1571    11127      70477        5.5018458883E+03
@@ -105,269 +173,312 @@ WOOD1P      245   2594    70216     328905        1.4429024116E+00
 WOODW      1099   8405    37478     240063        1.3044763331E+00
 """
 
-def parse_netlib_reference(raw_text):
+
+def parse_netlib_reference(raw_text: str) -> dict:
+    """Converte o bloco de texto da Netlib em {nome_instancia: valor_otimo}."""
     ref_map = {}
     for line in raw_text.strip().split("\n"):
         tokens = line.strip().split()
         if not tokens:
             continue
         name = tokens[0].upper()
-        opt_str = tokens[-1].replace("**", "")
         try:
-            ref_map[name] = float(opt_str)
+            ref_map[name] = float(tokens[-1].replace("**", ""))
         except ValueError:
+            logger.warning("Não foi possível interpretar o valor ótimo da linha: %r", line)
             ref_map[name] = None
     return ref_map
 
-def normalize_inst_name(name):
-    clean = str(name).upper()
-    clean = re.sub(r'\.(MPS|QPS|SIF)$', '', clean)
-    if clean == 'VTPBASE':
-        clean = 'VTP.BASE'
-    return clean
 
-def fmt_sci(val):
-    if pd.isna(val) or val is None:
-        return "-"
-    try:
-        val = float(val)
-        return f"{val:.1e}"
-    except (ValueError, TypeError):
-        return str(val)
+def normalize_inst_name(name) -> str:
+    """Normaliza o nome da instância (remove extensão, corrige VTPBASE)."""
+    clean = str(name).upper().strip()
+    clean = re.sub(r"\.(MPS|QPS|SIF)$", "", clean)
+    return "VTP.BASE" if clean == "VTPBASE" else clean
 
-def generate_excel_report(csv_file="resultados_grid_search.csv", excel_file="Resultados_Simplex_Parametros.xlsx"):
-    try:
-        df = pd.read_csv(csv_file)
-    except Exception as e:
-        print(f"❌ Erro ao ler '{csv_file}': {e}")
+
+# --------------------------------------------------------------------------- #
+# Formatação da planilha
+# --------------------------------------------------------------------------- #
+
+def style_header(ws: Worksheet) -> None:
+    """Aplica negrito/cor no cabeçalho e congela a primeira linha."""
+    for cell in ws[1]:
+        cell.font = HEADER_FONT
+        cell.fill = HEADER_FILL
+        cell.alignment = Alignment(horizontal="center", vertical="center")
+    ws.freeze_panes = "A2"
+    if ws.max_row > 1 and ws.max_column > 1:
+        ws.auto_filter.ref = ws.dimensions
+
+
+def apply_number_formats(ws: Worksheet) -> None:
+    """Aplica formato numérico às colunas conhecidas, pela posição do cabeçalho."""
+    headers = [cell.value for cell in ws[1]]
+    for col_name, fmt in NUMBER_FORMATS.items():
+        if col_name not in headers:
+            continue
+        col_idx = headers.index(col_name)
+        for row in ws.iter_rows(min_row=2, max_row=ws.max_row):
+            row[col_idx].number_format = fmt
+
+
+def autofit_columns(ws: Worksheet, min_width: int = 10, max_width: int = 40) -> None:
+    """Ajusta a largura das colunas ao conteúdo (aproximado)."""
+    for col_cells in ws.columns:
+        length = max((len(str(c.value)) for c in col_cells if c.value is not None), default=0)
+        col_letter = get_column_letter(col_cells[0].column)
+        ws.column_dimensions[col_letter].width = min(max(length + 2, min_width), max_width)
+
+
+def set_body_font(ws: Worksheet) -> None:
+    """Garante fonte consistente (Arial) no corpo da tabela."""
+    for row in ws.iter_rows(min_row=2, max_row=ws.max_row):
+        for cell in row:
+            cell.font = BODY_FONT
+
+
+def apply_detail_colors(ws: Worksheet) -> None:
+    """Aplica cores para tabelas detalhadas (por instância e grid search).
+
+    Verde   : Status == SUCCESS e Is_Optimal == True
+    Amarelo : Status == SUCCESS e Is_Optimal == False
+    Vermelho: qualquer outro Status (erro, timeout, etc.)
+    """
+    headers = [cell.value for cell in ws[1]]
+    if "Status" not in headers or "Is_Optimal" not in headers:
         return
 
-    netlib_ref = parse_netlib_reference(NETLIB_REFERENCE_DATA)
+    status_idx = headers.index("Status")
+    optimal_idx = headers.index("Is_Optimal")
+
+    for row in ws.iter_rows(min_row=2, max_row=ws.max_row):
+        status_val = str(row[status_idx].value).strip().upper()
+        is_optimal = bool(row[optimal_idx].value)
+
+        if status_val == "SUCCESS" and is_optimal:
+            fill = GREEN_FILL
+        elif status_val == "SUCCESS" and not is_optimal:
+            fill = YELLOW_FILL
+        else:
+            fill = RED_FILL
+
+        for cell in row:
+            cell.fill = fill
+
+
+def apply_summary_colors(ws: Worksheet) -> None:
+    """Aplica cores para tabelas resumidas de agrupamento de parâmetros.
+
+    "Sucesso" aqui é sempre sinônimo de "ótimo" (verde) -- uma execução que
+    apenas rodou sem erro, mas com valor diferente do ótimo, não conta como
+    sucesso e cai em amarelo (parcial).
+
+    Verde   : Acertos_Otimos == Total_Testes (100% de acerto exato)
+    Amarelo : 0 < Acertos_Otimos < Total_Testes (acerto parcial)
+    Vermelho: Acertos_Otimos == 0 (nenhum acerto exato)
+    """
+    headers = [cell.value for cell in ws[1]]
+    if "Acertos_Otimos" not in headers or "Total_Testes" not in headers:
+        return
+
+    otimos_idx = headers.index("Acertos_Otimos")
+    total_idx = headers.index("Total_Testes")
+
+    for row in ws.iter_rows(min_row=2, max_row=ws.max_row):
+        try:
+            otimos = float(row[otimos_idx].value or 0)
+            total = float(row[total_idx].value or 0)
+        except (ValueError, TypeError):
+            continue
+
+        if total <= 0:
+            continue
+        elif otimos == total:
+            fill = GREEN_FILL
+        elif otimos > 0:
+            fill = YELLOW_FILL
+        else:
+            fill = RED_FILL
+
+        for cell in row:
+            cell.fill = fill
+
+
+def finalize_sheet(ws: Worksheet, color_fn) -> None:
+    """Aplica cor, formato numérico, fonte e layout padrão a uma aba."""
+    color_fn(ws)
+    style_header(ws)
+    set_body_font(ws)
+    apply_number_formats(ws)
+    autofit_columns(ws)
+
+
+# --------------------------------------------------------------------------- #
+# Processamento dos dados
+# --------------------------------------------------------------------------- #
+
+def load_results(csv_file: str) -> pd.DataFrame:
+    """Lê e valida o CSV de resultados do grid search."""
+    path = Path(csv_file)
+    if not path.exists():
+        raise FileNotFoundError(f"Arquivo de resultados não encontrado: '{csv_file}'")
+
+    df = pd.read_csv(path)
+
+    missing = [c for c in REQUIRED_COLUMNS if c not in df.columns]
+    if missing:
+        raise ValueError(
+            f"O CSV '{csv_file}' está sem as colunas obrigatórias: {missing}. "
+            f"Colunas encontradas: {list(df.columns)}"
+        )
+
+    if df.empty:
+        raise ValueError(f"O CSV '{csv_file}' não contém nenhuma linha de dados.")
+
+    return df
+
+
+def enrich_results(df: pd.DataFrame, netlib_ref: dict, tolerance: float) -> pd.DataFrame:
+    """Adiciona colunas derivadas: referência ótima, diferenças e flags de sucesso."""
+    df = df.copy()
 
     df["Norm_Instance"] = df["Instance"].apply(normalize_inst_name)
     df["Optimal_Ref"] = df["Norm_Instance"].map(netlib_ref)
-    df["Cost_Num"] = pd.to_numeric(df["Cost"], errors='coerce')
-    df["Time_Seconds"] = pd.to_numeric(df["Time_Seconds"], errors='coerce')
-    df["Epsilon_Num"] = pd.to_numeric(df["Epsilon"], errors='coerce')
+
+    unmatched = sorted(set(df.loc[df["Optimal_Ref"].isna(), "Norm_Instance"]))
+    if unmatched:
+        logger.warning(
+            "%d instância(s) sem valor de referência na Netlib (não entram no cálculo de acerto): %s",
+            len(unmatched), ", ".join(unmatched),
+        )
+
+    df["Cost_Num"] = pd.to_numeric(df["Cost"], errors="coerce")
+    df["Time_Seconds"] = pd.to_numeric(df["Time_Seconds"], errors="coerce")
+    df["Epsilon_Num"] = pd.to_numeric(df["Epsilon"], errors="coerce")
 
     df["Abs_Diff"] = (df["Cost_Num"] - df["Optimal_Ref"]).abs()
     df["Rel_Diff"] = np.where(
         df["Optimal_Ref"].abs() > 1e-9,
         df["Abs_Diff"] / df["Optimal_Ref"].abs(),
-        df["Abs_Diff"]
-    )
-    
-    df["Is_Optimal"] = (df["Status"] == "SUCCESS") & (df["Rel_Diff"] < 1e-4)
-
-    wb = openpyxl.Workbook()
-    wb.remove(wb.active)
-
-    # Estilos de células
-    header_fill = PatternFill(start_color="1F4E79", end_color="1F4E79", fill_type="solid")
-    header_font = Font(name="Calibri", size=11, bold=True, color="FFFFFF")
-    title_font = Font(name="Calibri", size=16, bold=True, color="1F4E79")
-    subtitle_font = Font(name="Calibri", size=13, bold=True, color="1F4E79")
-    regular_font = Font(name="Calibri", size=11)
-    
-    thin_border = Border(
-        left=Side(style='thin', color='D9D9D9'),
-        right=Side(style='thin', color='D9D9D9'),
-        top=Side(style='thin', color='D9D9D9'),
-        bottom=Side(style='thin', color='D9D9D9')
+        df["Abs_Diff"],
     )
 
-    success_fill = PatternFill(start_color="E2EFDA", end_color="E2EFDA", fill_type="solid")
-    warning_fill = PatternFill(start_color="FFF2CC", end_color="FFF2CC", fill_type="solid")
-    error_fill = PatternFill(start_color="FCE4D6", end_color="FCE4D6", fill_type="solid")
+    df["Is_Success"] = df["Status"].astype(str).str.strip().str.upper() == "SUCCESS"
+    df["Is_Optimal"] = df["Is_Success"] & (df["Rel_Diff"] < tolerance)
 
-    df_success = df[df["Status"] == "SUCCESS"].copy()
+    return df
 
-    # ==================== ABA 1: RESUMO EXECUTIVO ====================
-    ws_summary = wb.create_sheet(title="Resumo Executivo")
-    ws_summary.views.sheetView[0].showGridLines = True
 
-    ws_summary["A1"] = "Relatório Executivo & Validação Netlib - Solver Simplex"
-    ws_summary["A1"].font = title_font
-
-    total_runs = len(df)
-    success_runs = len(df_success)
-    optimal_runs = df["Is_Optimal"].sum()
-    divergent_runs = success_runs - optimal_runs
-    timeout_runs = len(df[df["Status"] == "TIMEOUT"])
-    infeasible_runs = len(df[df["Status"] == "INFEASIBLE"])
-    error_runs = total_runs - success_runs - timeout_runs - infeasible_runs
-    avg_time = df_success["Time_Seconds"].mean()
-    acc_rate = (optimal_runs / success_runs) if success_runs > 0 else 0
-
-    kpis = [
-        ("Total de Testes", total_runs, "A3", "B3"),
-        ("Sucessos (Solver)", success_runs, "D3", "E3"),
-        ("Ótimos Confirmados (Netlib)", optimal_runs, "G3", "H3"),
-        ("Soluções Divergentes", divergent_runs, "A6", "B6"),
-        ("Timeouts", timeout_runs, "D6", "E6"),
-        ("Inviáveis / Erros", infeasible_runs + error_runs, "G6", "H6"),
-        ("Precisão das Soluções", f"{acc_rate:.1%}", "A9", "B9"),
-        ("Tempo Médio (Sucessos)", f"{avg_time:.4f}s" if pd.notnull(avg_time) else "-", "D9", "E9")
-    ]
-
-    for title, val, cell_t, cell_v in kpis:
-        ws_summary[cell_t] = title
-        ws_summary[cell_t].font = Font(name="Calibri", size=10, color="595959")
-        ws_summary[cell_v] = val
-        ws_summary[cell_v].font = Font(name="Calibri", size=14, bold=True, color="1F4E79")
-
-    ws_summary["A12"] = "Ranking das Melhores Combinações de Parâmetros"
-    ws_summary["A12"].font = subtitle_font
-
-    df["Is_Success_Num"] = (df["Status"] == "SUCCESS").astype(int)
-    param_cols = ["Preprocess", "Seed", "Epsilon_Num", "Refactor_Period"]
-    
-    best_combos = df.groupby(param_cols, as_index=False).agg(
-        Total_Runs=("Run_ID", "count"),
-        Successes=("Is_Success_Num", "sum"),
-        Optimal_Matches=("Is_Optimal", "sum"),
-        Avg_Time=("Time_Seconds", "mean")
+def build_summary(df: pd.DataFrame) -> pd.DataFrame:
+    """Aba 'Resumo Executivo': uma linha por combinação de parâmetros."""
+    summary = df.groupby(PARAM_COLS, as_index=False).agg(
+        Total_Testes=("Run_ID", "count"),
+        Acertos_Otimos=("Is_Optimal", "sum"),
+        Execucoes_Sem_Erro=("Is_Success", "sum"),
+        Tempo_Medio_s=("Time_Seconds", "mean"),
+    )
+    summary["Taxa_Acerto_Otimo"] = summary["Acertos_Otimos"] / summary["Total_Testes"]
+    return summary.sort_values(
+        by=["Acertos_Otimos", "Taxa_Acerto_Otimo", "Tempo_Medio_s"],
+        ascending=[False, False, True],
     )
 
-    best_combos["Success_Rate"] = best_combos["Successes"] / best_combos["Total_Runs"]
-    best_combos["Accuracy"] = best_combos["Optimal_Matches"] / best_combos["Successes"]
-    best_combos = best_combos.sort_values(by=["Accuracy", "Success_Rate", "Avg_Time"], ascending=[False, False, True])
 
-    # Colunas com num/total
-    comb_headers = [
-        "Preprocess", "Seed", "Epsilon", "Refactor Period", "Qtd Testes", 
-        "Sucessos (num/total)", "Ótimos Netlib (num/total)", "Taxa Sucesso", "Precisão Custo", "Tempo Médio (s)"
+def build_best_per_instance(df: pd.DataFrame) -> pd.DataFrame:
+    """Aba 'Resultados por Instancia': melhor execução de cada instância."""
+    best = (
+        df.sort_values(
+            by=["Instance", "Is_Optimal", "Is_Success", "Time_Seconds"],
+            ascending=[True, False, False, True],
+        )
+        .groupby("Instance", as_index=False)
+        .first()
+    )
+    cols = [
+        "Instance", "Status", "Cost_Num", "Optimal_Ref", "Rel_Diff", "Is_Optimal",
+        "Time_Seconds", "Preprocess", "Seed", "Epsilon_Num", "Refactor_Period",
     ]
-    for col_idx, text in enumerate(comb_headers, 1):
-        cell = ws_summary.cell(row=14, column=col_idx, value=text)
-        cell.fill = header_fill
-        cell.font = header_font
-        cell.alignment = Alignment(horizontal="center")
+    return best[cols]
 
-    for row_idx, r in enumerate(best_combos.head(10).itertuples(), 15):
-        eps_sci = fmt_sci(r.Epsilon_Num)
-        suc_num_total = f"{r.Successes}/{r.Total_Runs}"
-        opt_num_total = f"{r.Optimal_Matches}/{r.Total_Runs}"
-        
-        vals = [
-            r.Preprocess, 
-            r.Seed, 
-            eps_sci, 
-            r.Refactor_Period, 
-            r.Total_Runs, 
-            suc_num_total, 
-            opt_num_total, 
-            f"{r.Success_Rate:.1%}", 
-            f"{r.Accuracy:.1%}", 
-            round(r.Avg_Time, 4) if pd.notnull(r.Avg_Time) else "-"
-        ]
-        for col_idx, val in enumerate(vals, 1):
-            cell = ws_summary.cell(row=row_idx, column=col_idx, value=val)
-            cell.font = regular_font
-            cell.border = thin_border
-            if col_idx in [1, 2, 3, 4, 5, 6, 7]:
-                cell.alignment = Alignment(horizontal="center")
 
-    # ==================== ABA 2: VALIDAÇÃO NETLIB POR INSTÂNCIA ====================
-    ws_best = wb.create_sheet(title="Validação Netlib por Instância")
-    ws_best.views.sheetView[0].showGridLines = True
+def build_param_comparison(df: pd.DataFrame) -> pd.DataFrame:
+    """Aba 'Comparacao de Parametros': impacto de cada parâmetro isoladamente."""
+    summaries = []
+    for param in PARAM_COLS:
+        p_df = df.groupby(param, as_index=False).agg(
+            Total_Testes=("Run_ID", "count"),
+            Acertos_Otimos=("Is_Optimal", "sum"),
+            Execucoes_Sem_Erro=("Is_Success", "sum"),
+            Tempo_Medio_s=("Time_Seconds", "mean"),
+        )
+        p_df.insert(0, "Parametro", param)
+        p_df.rename(columns={param: "Opcao_Valor"}, inplace=True)
+        p_df["Taxa_Acerto_Otimo"] = p_df["Acertos_Otimos"] / p_df["Total_Testes"]
+        p_df = p_df.sort_values(by=["Acertos_Otimos", "Tempo_Medio_s"], ascending=[False, True])
+        summaries.append(p_df)
 
-    ws_best["A1"] = "Comparação Custo Simplex vs. Valor Ótimo de Referência Netlib"
-    ws_best["A1"].font = title_font
+    return pd.concat(summaries, ignore_index=True)
 
-    best_per_inst_idx = df_success.groupby("Instance")["Time_Seconds"].idxmin()
-    best_per_inst = df.loc[best_per_inst_idx].sort_values("Instance")
 
-    # Parâmetros individualizados em colunas dedicadas
-    best_headers = [
-        "Instância", "Status Solver", "Custo Simplex", "Valor Ótimo Netlib", 
-        "Erro Relativo", "Validação", "Tempo (s)", "Preprocess", "Seed", "Epsilon", "Refactor Period"
-    ]
-    for col_idx, h in enumerate(best_headers, 1):
-        cell = ws_best.cell(row=3, column=col_idx, value=h)
-        cell.fill = header_fill
-        cell.font = header_font
-        cell.alignment = Alignment(horizontal="center")
+# --------------------------------------------------------------------------- #
+# Orquestração
+# --------------------------------------------------------------------------- #
 
-    for row_idx, (_, data) in enumerate(best_per_inst.iterrows(), 4):
-        rel_diff = data["Rel_Diff"]
-        
-        if pd.isna(data["Optimal_Ref"]):
-            val_status = "SEM REF NETLIB"
-            fill_color = warning_fill
-        elif data["Is_Optimal"]:
-            val_status = "ÓTIMO (MATCH)"
-            fill_color = success_fill
-        else:
-            val_status = "DIVERGENTE"
-            fill_color = error_fill
+def generate_excel_report(
+    csv_file: str = DEFAULT_CSV_FILE,
+    excel_file: str = DEFAULT_EXCEL_FILE,
+    tolerance: float = DEFAULT_TOLERANCE,
+) -> None:
+    df = load_results(csv_file)
+    netlib_ref = parse_netlib_reference(NETLIB_REFERENCE_DATA)
+    df = enrich_results(df, netlib_ref, tolerance)
 
-        row_vals = [
-            data["Instance"],
-            data["Status"],
-            round(data["Cost_Num"], 6) if pd.notnull(data["Cost_Num"]) else "-",
-            round(data["Optimal_Ref"], 6) if pd.notnull(data["Optimal_Ref"]) else "N/A",
-            f"{rel_diff:.2e}" if pd.notnull(rel_diff) else "N/A",
-            val_status,
-            round(data["Time_Seconds"], 6),
-            data["Preprocess"],
-            data["Seed"],
-            fmt_sci(data["Epsilon_Num"]),
-            data["Refactor_Period"]
-        ]
+    sheets = {
+        "Resumo Executivo": (build_summary(df), apply_summary_colors),
+        "Resultados por Instancia": (build_best_per_instance(df), apply_detail_colors),
+        "Comparacao de Parametros": (build_param_comparison(df), apply_summary_colors),
+        "Resultados Grid Search": (df, apply_detail_colors),
+    }
 
-        for col_idx, val in enumerate(row_vals, 1):
-            cell = ws_best.cell(row=row_idx, column=col_idx, value=val)
-            cell.font = regular_font
-            cell.border = thin_border
-            cell.fill = fill_color
-            if col_idx in [8, 9, 10, 11]:
-                cell.alignment = Alignment(horizontal="center")
+    with pd.ExcelWriter(excel_file, engine="openpyxl") as writer:
+        for sheet_name, (sheet_df, _) in sheets.items():
+            sheet_df.to_excel(writer, sheet_name=sheet_name, index=False)
 
-    # ==================== ABA 3: DADOS COMPLETOS ====================
-    ws_data = wb.create_sheet(title="Resultados Grid Search")
-    ws_data.views.sheetView[0].showGridLines = True
+        for sheet_name, (_, color_fn) in sheets.items():
+            finalize_sheet(writer.sheets[sheet_name], color_fn)
 
-    export_cols = ["Run_ID", "Instance", "Preprocess", "Seed", "Epsilon_Num", "Refactor_Period", "Time_Seconds", "Cost_Num", "Optimal_Ref", "Rel_Diff", "Status", "Is_Optimal"]
-    ws_data.append(["Run ID", "Instância", "Preprocess", "Seed", "Epsilon", "Refactor Period", "Tempo (s)", "Custo Solver", "Ótimo Netlib", "Erro Relativo", "Status Solver", "Ótimo Confirmado"])
+    n_optimal = int(df["Is_Optimal"].sum())
+    n_success = int(df["Is_Success"].sum())
+    logger.info(
+        "Relatório gerado com sucesso: '%s' (%d execuções | %d ótimas | %d rodaram sem erro)",
+        excel_file, len(df), n_optimal, n_success,
+    )
 
-    for col_idx in range(1, len(export_cols) + 1):
-        cell = ws_data.cell(row=1, column=col_idx)
-        cell.fill = header_fill
-        cell.font = header_font
-        cell.alignment = Alignment(horizontal="center", vertical="center")
 
-    for row_idx, row_data in enumerate(df[export_cols].values, 2):
-        formatted_row = list(row_data)
-        formatted_row[4] = fmt_sci(formatted_row[4])
-        if pd.notnull(formatted_row[9]):
-            formatted_row[9] = f"{formatted_row[9]:.2e}"
-            
-        ws_data.append(formatted_row)
-        
-        status = row_data[10]
-        is_opt = row_data[11]
+def parse_args(argv=None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Gera relatório Excel do grid search do Simplex.")
+    parser.add_argument("--csv", dest="csv_file", default=DEFAULT_CSV_FILE,
+                         help=f"Caminho do CSV de entrada (padrão: {DEFAULT_CSV_FILE})")
+    parser.add_argument("--output", dest="excel_file", default=DEFAULT_EXCEL_FILE,
+                         help=f"Caminho do Excel de saída (padrão: {DEFAULT_EXCEL_FILE})")
+    parser.add_argument("--tolerance", type=float, default=DEFAULT_TOLERANCE,
+                         help=f"Tolerância relativa para considerar o custo ótimo (padrão: {DEFAULT_TOLERANCE})")
+    return parser.parse_args(argv)
 
-        for col_idx in range(1, len(export_cols) + 1):
-            cell = ws_data.cell(row=row_idx, column=col_idx)
-            cell.font = regular_font
-            cell.border = thin_border
-            if status == "SUCCESS" and is_opt:
-                cell.fill = success_fill
-            elif status == "SUCCESS" and not is_opt:
-                cell.fill = warning_fill
-            else:
-                cell.fill = error_fill
 
-    # Ajuste automático das colunas
-    for sheet in wb.worksheets:
-        for col in sheet.columns:
-            max_len = max(len(str(cell.value or '')) for cell in col)
-            col_letter = get_column_letter(col[0].column)
-            sheet.column_dimensions[col_letter].width = max(max_len + 3, 12)
+def main(argv=None) -> int:
+    args = parse_args(argv)
+    try:
+        generate_excel_report(args.csv_file, args.excel_file, args.tolerance)
+    except (FileNotFoundError, ValueError) as e:
+        logger.error(str(e))
+        return 1
+    except Exception:
+        logger.exception("Falha inesperada ao gerar o relatório.")
+        return 1
+    return 0
 
-    wb.save(excel_file)
-    print(f"📊 Relatório Excel gerado com sucesso: '{excel_file}'")
 
 if __name__ == "__main__":
-    generate_excel_report()
+    sys.exit(main())
