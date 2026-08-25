@@ -5,7 +5,7 @@
 * Non-zeros:  5141
 * Format:     Free MPS
 *
-NAME
+NAME          PILOT4
 ROWS
  N R0000000
  L ECP501

@@ -40,18 +40,31 @@ logger = logging.getLogger(__name__)
 # --------------------------------------------------------------------------- #
 
 DEFAULT_CSV_FILE = "resultados_grid_search.csv"
-DEFAULT_EXCEL_FILE = "Resultados_Simplex_Parametros.xlsx"
+DEFAULT_EXCEL_FILE = "report.xlsx"
 DEFAULT_TOLERANCE = 1e-4  # tolerância relativa para considerar o custo "ótimo"
 
 REQUIRED_COLUMNS = [
-    "Run_ID", "Instance", "Status", "Cost", "Time_Seconds",
-    "Epsilon", "Preprocess", "Seed", "Refactor_Period",
+    "Run_ID",
+    "Instance",
+    "Status",
+    "Cost",
+    "Time_Seconds",
+    "Epsilon",
+    "Preprocess",
+    "Seed",
+    "Refactor_Period",
 ]
 PARAM_COLS = ["Preprocess", "Seed", "Epsilon_Num", "Refactor_Period"]
 
-GREEN_FILL = PatternFill(start_color="C6EFCE", end_color="C6EFCE", fill_type="solid")   # Sucesso exato
-YELLOW_FILL = PatternFill(start_color="FFEB9C", end_color="FFEB9C", fill_type="solid")  # Parcial / valor errado
-RED_FILL = PatternFill(start_color="FFC7CE", end_color="FFC7CE", fill_type="solid")     # Erro / sem acertos
+GREEN_FILL = PatternFill(
+    start_color="C6EFCE", end_color="C6EFCE", fill_type="solid"
+)  # Sucesso exato
+YELLOW_FILL = PatternFill(
+    start_color="FFEB9C", end_color="FFEB9C", fill_type="solid"
+)  # Parcial / valor errado
+RED_FILL = PatternFill(
+    start_color="FFC7CE", end_color="FFC7CE", fill_type="solid"
+)  # Erro / sem acertos
 
 HEADER_FONT = Font(name="Arial", bold=True, color="FFFFFF")
 HEADER_FILL = PatternFill(start_color="4472C4", end_color="4472C4", fill_type="solid")
@@ -185,7 +198,9 @@ def parse_netlib_reference(raw_text: str) -> dict:
         try:
             ref_map[name] = float(tokens[-1].replace("**", ""))
         except ValueError:
-            logger.warning("Não foi possível interpretar o valor ótimo da linha: %r", line)
+            logger.warning(
+                "Não foi possível interpretar o valor ótimo da linha: %r", line
+            )
             ref_map[name] = None
     return ref_map
 
@@ -200,6 +215,7 @@ def normalize_inst_name(name) -> str:
 # --------------------------------------------------------------------------- #
 # Formatação da planilha
 # --------------------------------------------------------------------------- #
+
 
 def style_header(ws: Worksheet) -> None:
     """Aplica negrito/cor no cabeçalho e congela a primeira linha."""
@@ -226,9 +242,13 @@ def apply_number_formats(ws: Worksheet) -> None:
 def autofit_columns(ws: Worksheet, min_width: int = 10, max_width: int = 40) -> None:
     """Ajusta a largura das colunas ao conteúdo (aproximado)."""
     for col_cells in ws.columns:
-        length = max((len(str(c.value)) for c in col_cells if c.value is not None), default=0)
+        length = max(
+            (len(str(c.value)) for c in col_cells if c.value is not None), default=0
+        )
         col_letter = get_column_letter(col_cells[0].column)
-        ws.column_dimensions[col_letter].width = min(max(length + 2, min_width), max_width)
+        ws.column_dimensions[col_letter].width = min(
+            max(length + 2, min_width), max_width
+        )
 
 
 def set_body_font(ws: Worksheet) -> None:
@@ -318,6 +338,7 @@ def finalize_sheet(ws: Worksheet, color_fn) -> None:
 # Processamento dos dados
 # --------------------------------------------------------------------------- #
 
+
 def load_results(csv_file: str) -> pd.DataFrame:
     """Lê e valida o CSV de resultados do grid search."""
     path = Path(csv_file)
@@ -339,7 +360,9 @@ def load_results(csv_file: str) -> pd.DataFrame:
     return df
 
 
-def enrich_results(df: pd.DataFrame, netlib_ref: dict, tolerance: float) -> pd.DataFrame:
+def enrich_results(
+    df: pd.DataFrame, netlib_ref: dict, tolerance: float
+) -> pd.DataFrame:
     """Adiciona colunas derivadas: referência ótima, diferenças e flags de sucesso."""
     df = df.copy()
 
@@ -350,7 +373,8 @@ def enrich_results(df: pd.DataFrame, netlib_ref: dict, tolerance: float) -> pd.D
     if unmatched:
         logger.warning(
             "%d instância(s) sem valor de referência na Netlib (não entram no cálculo de acerto): %s",
-            len(unmatched), ", ".join(unmatched),
+            len(unmatched),
+            ", ".join(unmatched),
         )
 
     df["Cost_Num"] = pd.to_numeric(df["Cost"], errors="coerce")
@@ -396,8 +420,17 @@ def build_best_per_instance(df: pd.DataFrame) -> pd.DataFrame:
         .first()
     )
     cols = [
-        "Instance", "Status", "Cost_Num", "Optimal_Ref", "Rel_Diff", "Is_Optimal",
-        "Time_Seconds", "Preprocess", "Seed", "Epsilon_Num", "Refactor_Period",
+        "Instance",
+        "Status",
+        "Cost_Num",
+        "Optimal_Ref",
+        "Rel_Diff",
+        "Is_Optimal",
+        "Time_Seconds",
+        "Preprocess",
+        "Seed",
+        "Epsilon_Num",
+        "Refactor_Period",
     ]
     return best[cols]
 
@@ -415,7 +448,9 @@ def build_param_comparison(df: pd.DataFrame) -> pd.DataFrame:
         p_df.insert(0, "Parametro", param)
         p_df.rename(columns={param: "Opcao_Valor"}, inplace=True)
         p_df["Taxa_Acerto_Otimo"] = p_df["Acertos_Otimos"] / p_df["Total_Testes"]
-        p_df = p_df.sort_values(by=["Acertos_Otimos", "Tempo_Medio_s"], ascending=[False, True])
+        p_df = p_df.sort_values(
+            by=["Acertos_Otimos", "Tempo_Medio_s"], ascending=[False, True]
+        )
         summaries.append(p_df)
 
     return pd.concat(summaries, ignore_index=True)
@@ -424,6 +459,7 @@ def build_param_comparison(df: pd.DataFrame) -> pd.DataFrame:
 # --------------------------------------------------------------------------- #
 # Orquestração
 # --------------------------------------------------------------------------- #
+
 
 def generate_excel_report(
     csv_file: str = DEFAULT_CSV_FILE,
@@ -452,18 +488,35 @@ def generate_excel_report(
     n_success = int(df["Is_Success"].sum())
     logger.info(
         "Relatório gerado com sucesso: '%s' (%d execuções | %d ótimas | %d rodaram sem erro)",
-        excel_file, len(df), n_optimal, n_success,
+        excel_file,
+        len(df),
+        n_optimal,
+        n_success,
     )
 
 
 def parse_args(argv=None) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Gera relatório Excel do grid search do Simplex.")
-    parser.add_argument("--csv", dest="csv_file", default=DEFAULT_CSV_FILE,
-                         help=f"Caminho do CSV de entrada (padrão: {DEFAULT_CSV_FILE})")
-    parser.add_argument("--output", dest="excel_file", default=DEFAULT_EXCEL_FILE,
-                         help=f"Caminho do Excel de saída (padrão: {DEFAULT_EXCEL_FILE})")
-    parser.add_argument("--tolerance", type=float, default=DEFAULT_TOLERANCE,
-                         help=f"Tolerância relativa para considerar o custo ótimo (padrão: {DEFAULT_TOLERANCE})")
+    parser = argparse.ArgumentParser(
+        description="Gera relatório Excel do grid search do Simplex."
+    )
+    parser.add_argument(
+        "--csv",
+        dest="csv_file",
+        default=DEFAULT_CSV_FILE,
+        help=f"Caminho do CSV de entrada (padrão: {DEFAULT_CSV_FILE})",
+    )
+    parser.add_argument(
+        "--output",
+        dest="excel_file",
+        default=DEFAULT_EXCEL_FILE,
+        help=f"Caminho do Excel de saída (padrão: {DEFAULT_EXCEL_FILE})",
+    )
+    parser.add_argument(
+        "--tolerance",
+        type=float,
+        default=DEFAULT_TOLERANCE,
+        help=f"Tolerância relativa para considerar o custo ótimo (padrão: {DEFAULT_TOLERANCE})",
+    )
     return parser.parse_args(argv)
 
 
