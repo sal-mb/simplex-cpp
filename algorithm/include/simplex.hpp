@@ -6,8 +6,8 @@
 #include <optional>
 #include <vector>
 
-#include "problem_data.hpp"
 #include "params.hpp"
+#include "problem_data.hpp"
 
 struct EtaMatrix {
     Eigen::VectorXd col;
@@ -64,6 +64,16 @@ class Simplex {
     Eigen::VectorXd c_b;
     Eigen::RowVectorXd y;
     bool basis_changed{true};
+
+    // Consecutive degenerate (t <= eps) pivots. Drives the shared
+    // Dantzig+cheapest-fix -> Bland's rule fallback: once this reaches
+    // p.bland_threshold * (m + n), both choose_entering_variable and
+    // choose_leaving_variable switch to smallest-index selection
+    // (Bland's rule requires BOTH sides simultaneously for its
+    // anti-cycling guarantee to hold -- switching only one side would
+    // not be safe). Reset to 0 on any non-degenerate step.
+    size_t degenerate_streak{0};
+    bool use_bland() const;
 
     // ETA related
     std::vector<EtaMatrix> eta_vector;

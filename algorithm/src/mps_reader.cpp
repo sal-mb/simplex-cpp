@@ -95,9 +95,12 @@ void MpsReader::preproc_scan(ifstream& read_file) {
             read_file >> firstWord;
             while (check_section_name(firstWord) == -1) {
                 // count n_rows, n_rows_eq, n_rows_inq
-                if (firstWord == "L" || firstWord == "G" || firstWord == "E") {
+                if (firstWord == "L" || firstWord == "G") {
                     n_rows++;
                     n_rows_inq++;
+                } else if (firstWord == "E") {
+                    n_rows++;
+                    n_rows_eq++;
                 } else if (firstWord == "N") {
                     n_rows++;
                 }
@@ -309,21 +312,26 @@ void MpsReader::get_bnds(ifstream& read_file, VectorXd& lb, VectorXd& ub) {
         if (colIdx < 0) continue;
 
         // cout << "l: " << label << " " << colName << endl;
-        if (label == "LO")
+        if (label == "LO") {
             lb(colIdx) = value;
-        else if (label == "UP")
+            ub(colIdx) = numeric_limits<double>::infinity();
+
+        } else if (label == "UP") {
+            lb(colIdx) = 0.0;
             ub(colIdx) = value;
-        else if (label == "FR") {
+        } else if (label == "FR") {
             lb(colIdx) = -numeric_limits<double>::infinity();
             ub(colIdx) = numeric_limits<double>::infinity();
         } else if (label == "FX") {
             lb(colIdx) = value;
             ub(colIdx) = value;
-        } else if (label == "MI")
+        } else if (label == "MI") {
             lb(colIdx) = -numeric_limits<double>::infinity();
-        else if (label == "PL")
+            ub(colIdx) = 0.0;
+        } else if (label == "PL") {
+            lb(colIdx) = 0.0;
             ub(colIdx) = numeric_limits<double>::infinity();
-        else if (label == "BV") {
+        } else if (label == "BV") {
             lb(colIdx) = 0.0;
             ub(colIdx) = 1.0;
         }

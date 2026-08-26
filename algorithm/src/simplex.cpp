@@ -119,9 +119,27 @@ Solution Simplex::solve() { // NOLINT
             }
             update_basis(leaving.leaving_b_idx.value(), entering.index);
             eta_vector.push_back({.col = d, .index = leaving.leaving_b_idx.value()});
-        } else if (p.verbose) {
-            println("[Bound Hit] Entering variable x_{} hit its bound at t = {:.6f}; no pivot.", entering_var,
-                    leaving.step_length);
+        } else {
+            if (p.verbose) {
+                println("[Bound Hit] Entering variable x_{} hit its bound at t = {:.6f}; no pivot.", entering_var,
+                        leaving.step_length);
+            }
+
+            if (phase == 0) {
+                // update bounds and c value of the entering and leaving var
+                update_phase_0_costs(entering_var);
+                for (int i = 0; i < m; i++) {
+                    update_phase_0_costs(basic_idx[i]);
+                    // c[] can change at any basic slot here (every basic
+                    // variable's x was shifted by the pivot, not just the
+                    // entering/leaving pair), so c_b must be refreshed for
+                    // every i -- refreshing only c_b[leaving_basis_idx] would
+                    // leave other slots stale, corrupting y = solve_btran(c_b)
+                    // and every reduced cost computed from it next iteration.
+                    c_b[i] = c[basic_idx[i]];
+                }
+                basis_changed = true;
+            }
         }
 
         // ETA refactorization
@@ -134,6 +152,10 @@ Solution Simplex::solve() { // NOLINT
 
         iteration++;
     }
+}
+
+bool Simplex::use_bland() const {
+    return static_cast<double>(degenerate_streak) >= p.bland_threshold * static_cast<double>(m + n);
 }
 
 EnteringVariableInfo Simplex::choose_entering_variable() {
@@ -156,13 +178,22 @@ EnteringVariableInfo Simplex::choose_entering_variable() {
         println("\n--- Evaluating Entering Variable Candidates ---");
     }
 
+    const bool bland = use_bland();
+    if (p.verbose && bland) {
+        println("[Bland] degenerate_streak={} >= threshold; forcing smallest-index entering rule.", degenerate_streak);
+    }
+
     EnteringVariableInfo result;
     size_t smallest_x = std::numeric_limits<size_t>::max();
+    double best_abs_rc = 0.0; // Dantzig: track the largest |reduced cost| seen so far
 
     for (size_t i = 0; i < nonbasic_idx.size(); i++) {
         auto x_i = nonbasic_idx[i];
-        // force bland's rule
-        if (x_i > smallest_x) {
+
+        // Bland's rule: once a valid smallest-index candidate is found,
+        // no larger index can ever replace it, so later ones can be
+        // skipped outright.
+        if (bland && x_i > smallest_x) {
             continue;
         }
 
@@ -174,11 +205,21 @@ EnteringVariableInfo Simplex::choose_entering_variable() {
                     lb[x_i], ub[x_i]);
         }
 
-        if (is_candidate(red_cost, x_val, x_i)) {
+        if (!is_candidate(red_cost, x_val, x_i)) {
+            continue;
+        }
+
+        if (bland) {
             result.index = i;
             result.reduced_cost = red_cost;
             result.optimal = false;
             smallest_x = x_i;
+        } else if (std::abs(red_cost) > best_abs_rc) {
+            // Dantzig's rule: largest |reduced cost| wins.
+            result.index = i;
+            result.reduced_cost = red_cost;
+            result.optimal = false;
+            best_abs_rc = std::abs(red_cost);
         }
     }
 
@@ -224,33 +265,60 @@ LeavingVariableInfo Simplex::choose_leaving_variable(const VectorXd& d, size_t e
         return std::max(0.0, (ub[basic_var] - x[basic_var]) / std::abs(d_i));
     };
 
+    const bool bland = use_bland();
+    if (p.verbose && bland) {
+        println("[Bland] degenerate_streak={} >= threshold; forcing smallest-index leaving rule.", degenerate_streak);
+    }
+
+    // First pass: find the minimum step limit t across all rows (this
+    // is needed regardless of which leaving rule is active), and, in
+    // Bland mode, the smallest basic-var index that achieves it.
+    std::vector<double> limits(m);
     double t = pInf;
     int leaving_b_idx = -1;
     size_t smallest_var_idx = std::numeric_limits<size_t>::max();
 
     for (int i = 0; i < m; i++) {
-        double limit = basic_variable_limit(i);
+        limits[i] = basic_variable_limit(i);
 
         if (p.verbose) {
             println("  Basic x_{} (slot {}): val = {:.6f}, step_limit = {:.6f}", basic_idx[i], i, x[basic_idx[i]],
-                    limit);
+                    limits[i]);
         }
-        if (limit >= pInf - p.eps) {
+        if (limits[i] >= pInf - p.eps) {
             continue;
         }
 
         // if tie, break by bland's rule
-        bool smaller = (limit < t - p.eps);
-        bool tie = (std::abs(limit - t) < p.eps);
+        bool smaller = (limits[i] < t - p.eps);
+        bool tie = (std::abs(limits[i] - t) < p.eps);
 
         if (smaller) {
-            t = limit;
+            t = limits[i];
             leaving_b_idx = i;
             smallest_var_idx = basic_idx[i];
-        } else if (tie && basic_idx[i] < smallest_var_idx) {
+        } else if (bland && tie && basic_idx[i] < smallest_var_idx) {
             // smallest index rule
             leaving_b_idx = i;
             smallest_var_idx = basic_idx[i];
+        }
+    }
+
+    // Second pass (cheapest-fix mode only): among all rows tied at the
+    // minimum t, prefer the largest |d_i| -- the most numerically
+    // stable pivot, which tends to break degenerate chains fastest
+    // instead of always picking the smallest index.
+    if (!bland && t < pInf - p.eps) {
+        double best_abs_d = 0.0;
+        for (int i = 0; i < m; i++) {
+            if (limits[i] >= pInf - p.eps) continue;
+            if (std::abs(limits[i] - t) < p.eps) {
+                double abs_d = std::abs(d[i]);
+                if (abs_d > best_abs_d) {
+                    best_abs_d = abs_d;
+                    leaving_b_idx = i;
+                }
+            }
         }
     }
 
@@ -262,6 +330,15 @@ LeavingVariableInfo Simplex::choose_leaving_variable(const VectorXd& d, size_t e
 
     if (t >= pInf - p.eps) {
         throw std::runtime_error("Problem Unbounded");
+    }
+
+    // A step of (approximately) zero length made no real progress --
+    // count it toward the Bland's-rule fallback trigger. Any genuine
+    // step resets the streak.
+    if (t <= p.eps) {
+        degenerate_streak++;
+    } else {
+        degenerate_streak = 0;
     }
 
     // try to solve numerical issue
@@ -320,11 +397,21 @@ void Simplex::update_basis(size_t leaving_basis_idx, size_t entering_nonbasic_id
         update_phase_0_costs(entering_var);
         for (int i = 0; i < m; i++) {
             update_phase_0_costs(basic_idx[i]);
+            // c[] can change at any basic slot here (every basic
+            // variable's x was shifted by the pivot, not just the
+            // entering/leaving pair), so c_b must be refreshed for
+            // every i -- refreshing only c_b[leaving_basis_idx] would
+            // leave other slots stale, corrupting y = solve_btran(c_b)
+            // and every reduced cost computed from it next iteration.
+            c_b[i] = c[basic_idx[i]];
         }
         update_phase_0_costs(leaving_var);
+    } else {
+        // c[] is static outside phase 0: only the identity at
+        // leaving_basis_idx changed (entering_var replaces leaving_var),
+        // its true cost is unchanged, so a single-entry update suffices.
+        c_b[leaving_basis_idx] = c[entering_var];
     }
-
-    c_b[leaving_basis_idx] = c[entering_var];
 
     // mark basis change
     basis_changed = true;

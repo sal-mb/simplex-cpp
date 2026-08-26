@@ -7,7 +7,7 @@
 #include "preprocess.hpp"
 using namespace fmt;
 
-ProblemData remove_fixed_variables(ProblemData data) {
+void Preprocessor::remove_fixed_variables() {
     const int n_orig = data.n;
 
     // Find columns with lb == ub (fixed variables)
@@ -30,8 +30,9 @@ ProblemData remove_fixed_variables(ProblemData data) {
 
     if (fixed_count == 0) {
         data.fixed_removed = true;
-        return data;
+        return;
     }
+    changed = true;
 
     // Adjust RHS b: NOTE this is NOT "unchanged" -- each fixed column's
     // contribution must be folded in (b -= A.col(j) * value) before the
@@ -56,7 +57,7 @@ ProblemData remove_fixed_variables(ProblemData data) {
         data.lb = Eigen::VectorXd(0);
         data.ub = Eigen::VectorXd(0);
         data.fixed_removed = true;
-        return data;
+        return;
     }
 
     // Adjust the constraint matrix A: keep only non-fixed columns.
@@ -88,5 +89,12 @@ ProblemData remove_fixed_variables(ProblemData data) {
     data.lb = std::move(new_lb);
     data.ub = std::move(new_ub);
     data.fixed_removed = true;
-    return data;
+}
+
+void Preprocessor::check_contradicting_bounds() {
+    for (int i = 0; i < data.n; i++) {
+        if (data.ub(i) < data.lb(i) - p.eps) {
+            throw std::runtime_error("CONTRADICTING BOUNDS");
+        }
+    }
 }

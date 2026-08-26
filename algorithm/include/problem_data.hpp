@@ -46,11 +46,13 @@ struct ProblemData {
     double obj_constant{0.0};
 
     // Output-state flags describing what preprocessing has actually
-    // been applied to this ProblemData so far (set by Preprocessor,
-    // not meant to be set by the caller -- see Preprocessor::scaling /
-    // Preprocessor::remove_fixed for the input-side configuration).
+    // been applied to this ProblemData so far (set by Preprocessor).
     bool scaling_applied{false};
     bool fixed_removed{false};
+    bool empty_rows_removed{false};
+    bool empty_cols_removed{false};
+    bool singleton_rows_removed{false};
+    bool redundant_forcing_removed{false};
 };
 
 template <>
@@ -70,25 +72,28 @@ struct fmt::formatter<ProblemData> {
     auto format(const ProblemData& p, FormatContext& ctx) const -> decltype(ctx.out()) {
         return fmt::format_to(ctx.out(),
                               "ProblemData {{\n"
-                              "  Name:               {}\n"
-                              "  File Name:          {}\n"
-                              "  Constraints (m):    {}\n"
-                              "  Variables (n):      {}\n"
-                              "  Equality Rows:      {}\n"
-                              "  Inequality Rows:    {}\n"
-                              "  A Dimensions:       {} x {}\n"
-                              "  b Size:             {}\n"
-                              "  lb Size:            {}\n"
-                              "  ub Size:            {}\n"
-                              "  c Size:             {}\n"
-                              "  Row Types:          [{}]\n"
-                              "  Objective Constant: {}\n"
-                              "  Scaling Applied:    {}\n"
-                              "  Fixed Removed:      {}\n"
+                              "  Name:                   {}\n"
+                              "  File Name:              {}\n"
+                              "  Constraints (m):        {}\n"
+                              "  Variables (n):          {}\n"
+                              "  Equality Rows:          {}\n"
+                              "  Inequality Rows:        {}\n"
+                              "  A Dimensions:           {} x {}\n"
+                              "  b Size:                 {}\n"
+                              "  lb Size:                {}\n"
+                              "  ub Size:                {}\n"
+                              "  c Size:                 {}\n"
+                              "  Row Types:              [{}]\n"
+                              "  Objective Constant:     {}\n"
+                              "  Scaling Applied:        {}\n"
+                              "  Fixed Removed:          {}\n"
+                              "  Empty Rows Removed:     {}\n"
+                              "  Empty Cols Removed:     {}\n"
+                              "  Singleton Rows Removed: {}\n"
                               "}}",
                               p.name.empty() ? "<unnamed>" : p.name, p.file_name.empty() ? "<none>" : p.file_name, p.m,
                               p.n, p.n_rows_eq, p.n_rows_inq, p.A.rows(), p.A.cols(), p.b.size(), p.lb.size(),
                               p.ub.size(), p.c.size(), fmt::join(p.row_types, ", "), p.obj_constant, p.scaling_applied,
-                              p.fixed_removed);
+                              p.fixed_removed, p.empty_rows_removed, p.empty_cols_removed, p.singleton_rows_removed);
     }
 };

@@ -3,7 +3,9 @@
 
 #include "preprocess.hpp"
 
-ProblemData create_slack_variables(ProblemData data) {
+Preprocessor::Preprocessor(const Params& p, ProblemData data) : p(p), data(data), changed(false) {}
+
+void Preprocessor::create_slack_variables() {
     const int m = data.m;
     const int n = data.n;
 
@@ -50,26 +52,52 @@ ProblemData create_slack_variables(ProblemData data) {
     data.lb = std::move(lb_ext);
     data.ub = std::move(ub_ext);
     data.b = Eigen::VectorXd::Zero(m);
-    return data;
 }
 
-ProblemData Preprocessor::process(const ProblemData& data) const {
-    ProblemData result = data;
+ProblemData Preprocessor::process() {
+    check_contradicting_bounds();
 
-    // Step 1: Remove fixed variables if requested
-    if (remove_fixed) {
-        result = remove_fixed_variables(std::move(result));
-        result.fixed_removed = true;
+    int pass = 0;
+    constexpr int MAX_PASSES = 10;
+    changed = true; // Initialized to enter the loop
+
+    // Presolve Pass Loop: runs techniques until convergence or MAX_PASSES
+    while (changed && pass < MAX_PASSES) {
+        changed = false; // Reset changed flag at the beginning of each pass
+        pass++;
+
+        if (p.tighten_bounds) {
+            tighten_individual_bounds();
+        }
+
+        if (p.remove_empty_rows) {
+            remove_empty_rows();
+        }
+
+        if (p.remove_empty_cols) {
+            remove_empty_columns();
+        }
+
+        if (p.remove_redundant_forcing) {
+            remove_redundant_forcing_constraints();
+        }
+
+        if (p.remove_fixed) {
+            remove_fixed_variables();
+        }
+
+        if (p.remove_singleton_rows) {
+            remove_singleton_rows();
+        }
     }
 
-    // Step 2: Apply scaling if requested
-    if (scaling) {
-        apply_scaling(result);
-        result.scaling_applied = true;
+    // Post-presolve scaling: executed once outside the loop
+    if (p.scaling) {
+        apply_scaling();
+        data.scaling_applied = true;
     }
 
-    // Step 3: Add slack variables
-    result = create_slack_variables(std::move(result));
+    create_slack_variables();
 
-    return result;
+    return data;
 }

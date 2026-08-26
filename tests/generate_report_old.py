@@ -1,14 +1,14 @@
 """
-generate_report.py
-===================
+run_simplex.py
+===============
 Gera um relatório Excel (.xlsx) a partir dos resultados de um grid search do
-algoritmo Simplex (saída de run_simplex.py), comparando o custo obtido em
-cada execução com o valor ótimo de referência da biblioteca Netlib.
+algoritmo Simplex, comparando o custo obtido em cada execução com o valor
+ótimo de referência da biblioteca Netlib.
 
 Uso:
-    python generate_report.py
-    python generate_report.py --csv resultados_grid_search.csv --output Relatorio.xlsx
-    python generate_report.py --tolerance 1e-5
+    python run_simplex.py
+    python run_simplex.py --csv resultados_grid_search.csv --output Relatorio.xlsx
+    python run_simplex.py --tolerance 1e-5
 
 Critério de cor (aplicado em todas as abas):
     Verde   -> execução com SUCCESS e custo bate com o valor ótimo (dentro da tolerância)
@@ -39,7 +39,7 @@ logger = logging.getLogger(__name__)
 # Configuração
 # --------------------------------------------------------------------------- #
 
-DEFAULT_CSV_FILE = "results/resultados_grid_search.csv"
+DEFAULT_CSV_FILE = "resultados_grid_search.csv"
 DEFAULT_EXCEL_FILE = "report.xlsx"
 DEFAULT_TOLERANCE = 1e-4  # tolerância relativa para considerar o custo "ótimo"
 
@@ -50,12 +50,11 @@ REQUIRED_COLUMNS = [
     "Cost",
     "Time_Seconds",
     "Epsilon",
-    "Profile",
+    "Preprocess",
     "Seed",
     "Refactor_Period",
-    "Bland_Threshold",
 ]
-PARAM_COLS = ["Profile", "Seed", "Epsilon_Num", "Refactor_Period", "Bland_Threshold"]
+PARAM_COLS = ["Preprocess", "Seed", "Epsilon_Num", "Refactor_Period"]
 
 GREEN_FILL = PatternFill(
     start_color="C6EFCE", end_color="C6EFCE", fill_type="solid"
@@ -74,19 +73,13 @@ BODY_FONT = Font(name="Arial")
 # Formatos numéricos por nome de coluna (aplicados quando a coluna existe na aba)
 NUMBER_FORMATS = {
     "Cost_Num": "#,##0.0000",
-    "Objective_Cost_Num": "#,##0.0000",
     "Optimal_Ref": "#,##0.0000",
     "Abs_Diff": "#,##0.0000",
     "Rel_Diff": "0.0000%",
     "Time_Seconds": "0.000",
-    "Total_Time_Num": "0.000",
-    "Phase0_Time": "0.000",
-    "Phase0_Cost": "#,##0.0000",
-    "Phase1_Cost": "#,##0.0000",
     "Tempo_Medio_s": "0.000",
     "Taxa_Acerto_Otimo": "0.0%",
     "Epsilon_Num": "0.0E+00",
-    "Bland_Threshold": "0.0",
 }
 
 # --------------------------------------------------------------------------- #
@@ -387,17 +380,6 @@ def enrich_results(
     df["Cost_Num"] = pd.to_numeric(df["Cost"], errors="coerce")
     df["Time_Seconds"] = pd.to_numeric(df["Time_Seconds"], errors="coerce")
     df["Epsilon_Num"] = pd.to_numeric(df["Epsilon"], errors="coerce")
-    df["Bland_Threshold"] = pd.to_numeric(df["Bland_Threshold"], errors="coerce")
-
-    if "Objective_Cost" in df.columns:
-        df["Objective_Cost_Num"] = pd.to_numeric(df["Objective_Cost"], errors="coerce")
-    else:
-        df["Objective_Cost_Num"] = df["Cost_Num"]
-
-    if "Total_Time" in df.columns:
-        df["Total_Time_Num"] = pd.to_numeric(df["Total_Time"], errors="coerce")
-    else:
-        df["Total_Time_Num"] = df["Time_Seconds"]
 
     df["Abs_Diff"] = (df["Cost_Num"] - df["Optimal_Ref"]).abs()
     df["Rel_Diff"] = np.where(
@@ -439,24 +421,18 @@ def build_best_per_instance(df: pd.DataFrame) -> pd.DataFrame:
     )
     cols = [
         "Instance",
-        "Profile",
         "Status",
         "Cost_Num",
-        "Objective_Cost_Num",
         "Optimal_Ref",
         "Rel_Diff",
         "Is_Optimal",
         "Time_Seconds",
-        "Total_Time_Num",
-        "Phase0_Iterations",
-        "Phase1_Iterations",
+        "Preprocess",
         "Seed",
         "Epsilon_Num",
         "Refactor_Period",
-        "Bland_Threshold",
     ]
-    available = [c for c in cols if c in best.columns]
-    return best[available]
+    return best[cols]
 
 
 def build_param_comparison(df: pd.DataFrame) -> pd.DataFrame:
