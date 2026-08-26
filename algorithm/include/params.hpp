@@ -9,8 +9,15 @@ struct Params {
     /// Input QPS/MPS instance file
     std::string instance_file;
 
-    /// Apply geometric scaling preprocess (mpsReader `pre` argument)
-    bool preprocess{false};
+    /// Apply geometric scaling preprocess (Preprocessor::scaling)
+    bool scaling{false};
+
+    /// Eliminate fixed (lb == ub) original variables before solving
+    /// (mpsReader `removeFixed` argument). Slack variables are never
+    /// touched by this, regardless of this flag -- every row keeps its
+    /// own slack column, since that structure is what the simplex
+    /// implementation's cold-start basis relies on.
+    bool remove_fixed{false};
 
     /// Random seed (-1 for random), for reproducible experiments
     int seed = -1;
@@ -36,7 +43,8 @@ struct Params {
         options.positional_help("instance").show_positional_help();
 
         options.add_options()("instance", "Instance file (positional)", cxxopts::value<std::string>())(
-                "p,preprocess", "Apply geometric scaling preprocess")(
+                "c,scaling", "Apply geometric scaling preprocess")(
+                "f,remove-fixed", "Eliminate fixed (lb==ub) original variables before solving")(
                 "s,seed", "Random seed (-1 for random)", cxxopts::value<int>()->default_value(std::to_string(p.seed)))(
                 "e,epsilon", "Epsilon for arithmetic computations",
                 cxxopts::value<double>()->default_value(std::to_string(p.eps)))
@@ -54,7 +62,8 @@ struct Params {
         }
 
         p.instance_file = result["instance"].as<std::string>();
-        p.preprocess = result.count("preprocess") > 0;
+        p.scaling = result.count("scaling") > 0;
+        p.remove_fixed = result.count("remove-fixed") > 0;
         p.seed = result["seed"].as<int>();
         p.eps = result["epsilon"].as<double>();
         p.refactor_period = result["refactor_period"].as<size_t>();
@@ -63,7 +72,8 @@ struct Params {
         if (p.verbose) {
             fmt::print("PARAMETERS:\n");
             fmt::print("  INSTANCE: {}\n", p.instance_file);
-            fmt::print("  PREPROCESS: {}\n", p.preprocess);
+            fmt::print("  SCALING: {}\n", p.scaling);
+            fmt::print("  REMOVE_FIXED: {}\n", p.remove_fixed);
             fmt::print("  SEED: {}\n", p.seed);
             fmt::print("  EPSILON: {}\n", p.eps);
         }

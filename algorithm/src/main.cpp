@@ -9,43 +9,61 @@
 
 #include "mps_reader.hpp"
 #include "params.hpp"
+#include "preprocess.hpp"
 #include "simplex.hpp"
 
 using namespace fmt;
 using namespace Eigen;
 
-VectorXd simplex(const mpsReader& instance);
-
 int main(int argc, char* argv[]) {
     Params::parse(argc, argv);
     auto& p = Params::get();
 
-    mpsReader reader;
-    reader.read(p.instance_file, static_cast<int>(p.preprocess));
+    // Step 1: Read MPS file (pure parsing, no preprocessing)
+    MpsReader reader;
+    ProblemData problem_data = reader.read(p.instance_file);
+    println("RAW: \n{}", problem_data);
+    getchar();
 
-    const int m = reader.n_rows_inq + reader.n_rows_eq;
-    const int n = reader.n_cols + m;
+    // Step 2: Preprocess (fixed variable removal -> scaling -> slack variable addition)
+    Preprocessor preprocessor;
+    preprocessor.remove_fixed = p.remove_fixed;
+    preprocessor.scaling = p.scaling;
+    ProblemData preprocessed = preprocessor.process(problem_data);
+    println("PREPROCESSED: \n{}", preprocessed);
+    getchar();
 
-    println("Problem: {}", reader.Name);
-    println("Rows: {}, Cols: {}", reader.n_rows, reader.n_cols);
-    println("m: {}, n: {}", m, n);
-
-    Simplex solver_p0(reader, p, std::nullopt, 0);
+    // Step 3: Solve using Simplex with ProblemData.
+    // Phase 0 finds an initial feasible basis (it temporarily overrides
+    // c with a feasibility-penalty cost internally); Phase 1, warm-started
+    // from Phase 0's resulting basis, then actually optimizes the true
+    // objective.
     auto start = std::chrono::high_resolution_clock::now();
-    Solution s = solver_p0.solve();
-    if (p.verbose) {
-        println("Starting Phase 1 with: \nbasic_idx: {}\nnonbasic_idx: {} \nB:\n{}\nN:\n{}\nx: {}\ncost: {}",
-                s.basic_idx, s.nonbasic_idx, streamed(s.B.toDense()), streamed(s.N.toDense()), s.x, s.cost);
-        getchar();
-    }
-    println("Finished Phase 0");
-    Simplex solver_p1(reader, p, s, 1);
-    s = solver_p1.solve();
+
+    Simplex phase0_solver(preprocessed, p, std::nullopt, 0);
+    Solution phase0_solution = phase0_solver.solve();
+
+    Simplex phase1_solver(preprocessed, p, phase0_solution, 1);
+    Solution s = phase1_solver.solve();
+
     auto end = std::chrono::high_resolution_clock::now();
 
     std::chrono::duration<double> elapsed = end - start;
-    println("Objective cost: {}", s.cost);
+
+    // s.cost only covers variables still present in x/c; any variable
+    // eliminated by remove_fixed_variables contributes obj_constant
+    // instead, since it no longer appears in either.
+    double true_cost = s.cost + preprocessed.obj_constant;
+
+    println("Objective cost: {}", true_cost);
     println("Total time: {:.6f} seconds", elapsed.count());
+
+    if (p.verbose) {
+        println("Final solution:");
+        println("  basic_idx: {}", s.basic_idx);
+        println("  nonbasic_idx: {}", s.nonbasic_idx);
+        println("  x: {}", s.x);
+    }
 
     return 0;
 }

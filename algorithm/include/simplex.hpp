@@ -6,7 +6,7 @@
 #include <optional>
 #include <vector>
 
-#include "mps_reader.hpp"
+#include "problem_data.hpp"
 #include "params.hpp"
 
 struct EtaMatrix {
@@ -36,11 +36,11 @@ struct Solution {
 
 class Simplex {
    public:
-    Simplex(const mpsReader& mps, const Params& p, std::optional<Solution> s, int phase);
+    Simplex(const ProblemData& data, const Params& p, std::optional<Solution> s, int phase);
 
     Solution solve();
 
-    const mpsReader& mps;
+    const ProblemData& data;
     const Params& p;
 
     int m;

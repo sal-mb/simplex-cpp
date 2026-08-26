@@ -208,9 +208,9 @@ for (cn, rn, v) in col_entries:
 out.append("RHS")
 for rn, v in rhs_entries:
     v_use = rhs_val.get(rn, v)
-    out.append("    RHS  %s  %s" % (row_name_map[rn], v_use))
+    out.append("    RHS1  %s  %s" % (row_name_map[rn], v_use))
 for newrow, v in extra_rhs:
-    out.append("    RHS  %s  %s" % (newrow, v))
+    out.append("    RHS1  %s  %s" % (newrow, v))
 
 out.append("BOUNDS")
 for label, cname, val in bound_entries:

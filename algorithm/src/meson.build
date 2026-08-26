@@ -1,6 +1,6 @@
+subdir('preprocess')
 sources = files(
   'main.cpp',
-  'scaling.cpp',
   'mps_reader.cpp',
   'simplex.cpp',
-)
+) + preprocess_srcs

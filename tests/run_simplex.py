@@ -2,6 +2,7 @@
 Script 1: Executor de Experimentos do Algoritmo Simplex (Grid Search) - Multithreaded
 -------------------------------------------------------------------------------------
 Varia os parâmetros da CLI C++ em paralelo e registra o tempo de execução, custo, status e stdout.
+Suporta passagem de diretório ou de uma única instância individual.
 """
 
 import os
@@ -16,7 +17,11 @@ import pandas as pd
 
 # ==================== CONFIGURAÇÕES DE EXECUÇÃO ====================
 EXECUTABLE_PATH = Path("../algorithm/.build/simplex")
-INSTANCES_DIR = Path("../instances")
+
+# Pode ser um DIRETÓRIO (ex: Path("../instances/tuff.mps"))
+# ou um ARQUIVO INDIVIDUAL (ex: Path("../instances/tuff.mps/instance1.mps"))
+INSTANCES_DIR = Path("../instances/tuff.mps")
+
 RESULTS_DIR = Path("results")
 TIMEOUT_SECONDS = 1800  # Tempo limite por execução (segundos)
 
@@ -36,20 +41,14 @@ CLI_PARAM_MAP = {
 # GRID DE PARÂMETROS PARA TESTAR
 PARAM_GRID = {
     "scaling": [False, True],  # --scaling
-    "remove_fixed": [
-        False,
-    ],  # --remove-fixed
+    "remove_fixed": [False, True],  # --remove-fixed
     "seed": [-1],  # --seed
     "epsilon": [  # --epsilon
-        1e-11,
         1e-10,
         1e-9,
         1e-8,
         1e-7,
         1e-6,
-        1e-5,
-        1e-4,
-        1e-3,
     ],
     "refactor_period": [1, 20],  # --refactor_period
     "verbose": [False],  # --verbose
@@ -193,14 +192,26 @@ def run_grid_search():
         return
 
     if not INSTANCES_DIR.exists():
-        print(f"❌ Erro: Diretório de instâncias não encontrado em '{INSTANCES_DIR}'")
+        print(f"❌ Erro: Caminho de instâncias não encontrado em '{INSTANCES_DIR}'")
+        return
+
+    # Suporta arquivo único ou diretório
+    if INSTANCES_DIR.is_file():
+        instance_files = [INSTANCES_DIR]
+    elif INSTANCES_DIR.is_dir():
+        instance_files = sorted([f for f in INSTANCES_DIR.glob("*") if f.is_file()])
+    else:
+        print(f"❌ Erro: Caminho '{INSTANCES_DIR}' inválido.")
+        return
+
+    if not instance_files:
+        print(f"⚠️ Aviso: Nenhuma instância encontrada em '{INSTANCES_DIR}'")
         return
 
     RESULTS_DIR.mkdir(parents=True, exist_ok=True)
     output_filename = get_dynamic_filename()
     output_csv = RESULTS_DIR / output_filename
 
-    instance_files = sorted([f for f in INSTANCES_DIR.glob("*") if f.is_file()])
     combinations = generate_parameter_combinations()
     total_runs = len(instance_files) * len(combinations)
 
@@ -233,7 +244,7 @@ def run_grid_search():
 
     print("\n" + "=" * 80)
     print(" ✅ EXECUÇÃO FINALIZADA COM SUCESSO!")
-    print(f"  • Dados brutos CSV: {output_csv}")
+    print(f"   • Dados brutos CSV: {output_csv}")
     print("=" * 80)
 
 

@@ -16,16 +16,16 @@
 using namespace Eigen;
 using namespace fmt;
 
-Simplex::Simplex(const mpsReader& mps, const Params& p, std::optional<Solution> s, int phase)
-    : mps(mps)
-    , p(p)
-    , m(mps.n_rows_inq + mps.n_rows_eq)
-    , n(mps.A.cols())
+Simplex::Simplex(const ProblemData& data_, const Params& p_, std::optional<Solution> s, int phase)
+    : data(data_)
+    , p(p_)
+    , m(data.m)
+    , n(data.A.cols())
     , phase(phase)
-    , A(mps.A.sparseView())
-    , ub(mps.ub)
-    , lb(mps.lb)
-    , c(-mps.c)
+    , A(data.A.sparseView())
+    , ub(data.ub)
+    , lb(data.lb)
+    , c(-data.c)
     , x(VectorXd::Zero(n))
     , c_b(VectorXd::Zero(m))
     , y(RowVectorXd::Zero(m)) {
@@ -39,14 +39,18 @@ Simplex::Simplex(const mpsReader& mps, const Params& p, std::optional<Solution> 
     } else {
         // in case of no initial solution provided
         for (int i = 0; i < n; i++) {
-            if (i < mps.n_cols) {
+            if (i < data.n) {
                 nonbasic_idx.push_back(i);
             } else {
                 basic_idx.push_back(i);
             }
         }
-        B0 = A.rightCols(m);
-        N = A.leftCols(mps.n_cols);
+        // A is already in the correct form (m x n with slacks included)
+        // Build B0 and N from A
+        if (m > 0 && n > 0) {
+            B0 = A.rightCols(m);
+            N = A.leftCols(data.n);
+        }
     }
 
     // init c_b
@@ -403,7 +407,7 @@ void Simplex::init_phase_0() {
     }
 
     // assign the variables to its own bounds
-    for (int i = 0; i < mps.n_cols; i++) {
+    for (int i = 0; i < data.n; i++) {
         auto var = nonbasic_idx[i];
 
         if (lb[var] > nInf + p.eps) {
@@ -418,8 +422,8 @@ void Simplex::init_phase_0() {
     }
 
     // finding initial x_b
-    VectorXd x_n = x.topRows(mps.n_cols);
-    VectorXd rhs = mps.b - N * x_n;
+    VectorXd x_n = x.topRows(data.n);
+    VectorXd rhs = data.b - N * x_n;
     VectorXd x_b = B0_solver.solve(rhs);
     for (int i = 0; i < m; i++) {
         x[basic_idx[i]] = x_b[i];
@@ -436,23 +440,23 @@ void Simplex::init_phase_0() {
 void Simplex::update_phase_0_costs(size_t var) {
     double val = x[var];
 
-    if (val < mps.lb[var] - p.eps) {
+    if (val < data.lb[var] - p.eps) {
         // below its true lower bound: temporarily allow it to range up to lb, and reward
         // increasing it (that's the direction that restores feasibility).
         c[var] = 1;
         lb[var] = nInf;
-        ub[var] = mps.lb[var];
-    } else if (val > mps.ub[var] + p.eps) {
+        ub[var] = data.lb[var];
+    } else if (val > data.ub[var] + p.eps) {
         // above its true upper bound, temporarily allow it to range down to ub, and
         // reward decreasing it.
         c[var] = -1;
         ub[var] = pInf;
-        lb[var] = mps.ub[var];
+        lb[var] = data.ub[var];
     } else {
         // within its true bounds, so no penalty, restore to true bounds.
         c[var] = 0;
-        lb[var] = mps.lb[var];
-        ub[var] = mps.ub[var];
+        lb[var] = data.lb[var];
+        ub[var] = data.ub[var];
     }
 }
 
@@ -460,10 +464,10 @@ double Simplex::compute_infeasibility() const {
     double infeasibility = 0.0;
     for (int i = 0; i < m; ++i) {
         size_t var = basic_idx[i];
-        if (x[var] < mps.lb[var]) {
-            infeasibility += (mps.lb[var] - x[var]);
-        } else if (x[var] > mps.ub[var]) {
-            infeasibility += (x[var] - mps.ub[var]);
+        if (x[var] < data.lb[var]) {
+            infeasibility += (data.lb[var] - x[var]);
+        } else if (x[var] > data.ub[var]) {
+            infeasibility += (x[var] - data.ub[var]);
         }
     }
     return infeasibility;
@@ -471,5 +475,5 @@ double Simplex::compute_infeasibility() const {
 
 Solution Simplex::get_solution() const {
     return Solution{
-            .basic_idx = basic_idx, .nonbasic_idx = nonbasic_idx, .B = B0, .N = N, .x = x, .cost = x.dot(mps.c)};
+            .basic_idx = basic_idx, .nonbasic_idx = nonbasic_idx, .B = B0, .N = N, .x = x, .cost = x.dot(data.c)};
 }
