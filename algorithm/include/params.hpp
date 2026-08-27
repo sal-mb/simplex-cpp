@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstdint>
 #include <cstdlib>
 #include <cxxopts.hpp>
 #include <fmt/core.h>

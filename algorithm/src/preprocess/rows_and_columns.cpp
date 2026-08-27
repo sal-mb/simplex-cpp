@@ -5,12 +5,11 @@
 #include "constants.hpp"
 #include "preprocess.hpp"
 
-void Preprocessor::rebuild_rows(const std::vector<int>& keep_rows) {
+bool rebuild_rows(ProblemData& data, const std::vector<int>& keep_rows) {
     if (keep_rows.size() == static_cast<size_t>(data.m)) {
-        return;
+        return false;
     }
 
-    changed = true;
     int new_m = static_cast<int>(keep_rows.size());
     Eigen::MatrixXd new_A(new_m, data.n);
     Eigen::VectorXd new_b(new_m);
@@ -28,14 +27,13 @@ void Preprocessor::rebuild_rows(const std::vector<int>& keep_rows) {
     data.b = std::move(new_b);
     data.row_types = std::move(new_row_types);
     data.m = new_m;
+    return true;
 }
 
-void Preprocessor::rebuild_columns(const std::vector<int>& keep_cols) {
+bool rebuild_columns(ProblemData& data, const std::vector<int>& keep_cols) {
     if (keep_cols.size() == static_cast<size_t>(data.n)) {
-        return;
+        return false;
     }
-
-    changed = true;
 
     int new_n = static_cast<int>(keep_cols.size());
     Eigen::MatrixXd new_A(data.m, new_n);
@@ -56,11 +54,13 @@ void Preprocessor::rebuild_columns(const std::vector<int>& keep_cols) {
     data.lb = std::move(new_lb);
     data.ub = std::move(new_ub);
     data.n = new_n;
+    return true;
 }
 
-void Preprocessor::remove_empty_rows() {
+PresolveResult remove_empty_rows(ProblemData& data, const Params& p) {
     std::vector<int> keep_rows;
     keep_rows.reserve(data.m);
+    int removed = 0;
 
     for (int i = 0; i < data.m; ++i) {
         bool is_empty = true;
@@ -78,18 +78,21 @@ void Preprocessor::remove_empty_rows() {
                 (type == 'G' && rhs > p.eps)) {
                 throw std::runtime_error("Presolve error: Infeasible empty row detected.");
             }
+            removed++;
             continue; // Constraint is redundant -> drop row
         }
 
         keep_rows.push_back(i);
     }
 
-    rebuild_rows(keep_rows);
+    bool changed = rebuild_rows(data, keep_rows);
+    return {changed, removed, 0};
 }
 
-void Preprocessor::remove_empty_columns() {
+PresolveResult remove_empty_columns(ProblemData& data, const Params& p) {
     std::vector<int> keep_cols;
     keep_cols.reserve(data.n);
+    int removed = 0;
 
     for (int j = 0; j < data.n; ++j) {
         bool is_empty = true;
@@ -104,8 +107,16 @@ void Preprocessor::remove_empty_columns() {
             double c_j = data.c(j);
             double fix_val = 0.0;
 
+            // This is a minimization problem (min c'x -- see
+            // mps_reader.hpp and Simplex::get_solution(), which reports
+            // x.dot(data.c) directly as the true cost; Simplex's own
+            // internal maximization of -data.c is just its pivoting
+            // engine's implementation detail and doesn't change what
+            // data.c itself means here). An empty column has no row
+            // pulling it either way, so it's fixed at whichever of its
+            // own bounds minimizes c_j * x_j.
             if (std::abs(c_j) <= p.eps) {
-                // c_j = 0: pick any finite feasible value
+                // c_j = 0: any feasible value works, pick a finite one.
                 if (data.lb(j) > nInf) {
                     fix_val = data.lb(j);
                 } else if (data.ub(j) < pInf) {
@@ -114,33 +125,38 @@ void Preprocessor::remove_empty_columns() {
                     fix_val = 0.0;
                 }
             } else if (c_j > 0) {
-                // c_j > 0: fix to upper bound (maximization)
-                if (data.ub(j) >= pInf) {
-                    throw std::runtime_error("Presolve error: Unbounded problem (empty col c_j > 0, ub = +inf)");
-                }
-                fix_val = data.ub(j);
-            } else {
-                // c_j < 0: fix to lower bound (maximization)
+                // c_j > 0: minimizing c_j*x_j means taking x_j as small
+                // as possible.
                 if (data.lb(j) <= nInf) {
-                    throw std::runtime_error("Presolve error: Unbounded problem (empty col c_j < 0, lb = -inf)");
+                    throw std::runtime_error("Presolve error: Unbounded problem (empty col c_j > 0, lb = -inf)");
                 }
                 fix_val = data.lb(j);
+            } else {
+                // c_j < 0: minimizing c_j*x_j means taking x_j as large
+                // as possible.
+                if (data.ub(j) >= pInf) {
+                    throw std::runtime_error("Presolve error: Unbounded problem (empty col c_j < 0, ub = +inf)");
+                }
+                fix_val = data.ub(j);
             }
 
             // Record constant objective shift
             data.obj_constant += c_j * fix_val;
+            removed++;
             continue; // Drop empty column
         }
 
         keep_cols.push_back(j);
     }
 
-    rebuild_columns(keep_cols);
+    bool changed = rebuild_columns(data, keep_cols);
+    return {changed, 0, removed};
 }
 
-void Preprocessor::remove_singleton_rows() {
+PresolveResult remove_singleton_rows(ProblemData& data, const Params& p) {
     std::vector<int> keep_rows;
     keep_rows.reserve(data.m);
+    int removed = 0;
 
     for (int i = 0; i < data.m; ++i) {
         int non_zero_col = -1;
@@ -171,11 +187,13 @@ void Preprocessor::remove_singleton_rows() {
             if (data.lb(j) > data.ub(j) + p.eps) {
                 throw std::runtime_error("Presolve error: Infeasible bound on singleton row.");
             }
+            removed++;
             continue; // Drop row after folding bound into variable limits
         }
 
         keep_rows.push_back(i);
     }
 
-    rebuild_rows(keep_rows);
+    bool changed = rebuild_rows(data, keep_rows);
+    return {changed, removed, 0};
 }

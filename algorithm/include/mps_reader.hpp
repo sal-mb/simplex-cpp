@@ -117,7 +117,13 @@ class MpsReader {
     void get_araw(ifstream& read_file, MatrixXd& Araw);
     void get_braw(ifstream& read_file, VectorXd& braw);
     void get_bnds(ifstream& read_file, VectorXd& lb, VectorXd& ub);
-    void split_c(MatrixXd& Araw, VectorXd& c);
+
+    // Pulls the objective (first "N" row) out of Araw into c, zeroing that
+    // row and marking it "X" so split_raw() drops it from the constraint
+    // matrix. Also captures the objective's constant term, if the MPS file
+    // gives one via an RHS entry keyed on the objective row's name (see
+    // mps-format.htm's note on the RHS section) -- 0 if none was given.
+    void split_c(MatrixXd& Araw, const VectorXd& braw, VectorXd& c, double& obj_constant);
 
     // Compacts Araw/braw (n_rows x n_cols, including the now-zeroed
     // objective row) down to the m real constraint rows, dropping the

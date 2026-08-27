@@ -4,7 +4,7 @@
 #include "preprocess.hpp"
 
 // Lower limit L_i = sum_{j in P_i} a_ij * l_j + sum_{j in M_i} a_ij * u_j
-LimitSummary Preprocessor::compute_lower_limit(int row_idx) const {
+LimitSummary compute_lower_limit(const ProblemData& data, const Params& p, int row_idx) {
     LimitSummary limit;
     for (int j = 0; j < data.n; ++j) {
         double a_ij = data.A(row_idx, j);
@@ -30,7 +30,7 @@ LimitSummary Preprocessor::compute_lower_limit(int row_idx) const {
 }
 
 // Upper limit U_i = sum_{j in P_i} a_ij * u_j + sum_{j in M_i} a_ij * l_j
-LimitSummary Preprocessor::compute_upper_limit(int row_idx) const {
+LimitSummary compute_upper_limit(const ProblemData& data, const Params& p, int row_idx) {
     LimitSummary limit;
     for (int j = 0; j < data.n; ++j) {
         double a_ij = data.A(row_idx, j);

@@ -7,12 +7,27 @@
 
 namespace {
 
+    // Threshold for "is this matrix entry structurally nonzero", used
+    // only to find the min/max-magnitude entries that drive each
+    // row/column's scale factor. Deliberately NOT Params::eps: that's a
+    // numerical *feasibility* tolerance (user-adjustable via --epsilon,
+    // default 1e-5) and can be far larger than the smallest legitimate
+    // coefficient in exactly the kind of wide-magnitude-spread problem
+    // scaling exists to help with. Using eps here made compute_min_vector
+    // report +inf (no entry found) for a row/column whose true minimum
+    // entry was merely small, which zeroes out that row/column's scale
+    // factor entirely (fac = 1/sqrt(min*max) with min=+inf) and destroys
+    // it. Scaling only ever multiplies (never subtracts), so a true zero
+    // stays exactly representable and a small tolerance well below
+    // Params::eps is enough to skip it without misclassifying genuine
+    // small coefficients as zero.
+    constexpr double kStructuralZeroTol = 1e-12;
+
     double compute_min_vector(const Eigen::VectorXd& v) {
         double result = pInf;
 
-        const auto& p = Params::get();
         for (long i = 0; i < v.size(); i++) {
-            if (v(i) > p.eps && result > v(i)) {
+            if (v(i) > kStructuralZeroTol && result > v(i)) {
                 result = v(i);
             }
         }
@@ -90,7 +105,7 @@ namespace {
 
 } // namespace
 
-void Preprocessor::apply_scaling() {
+void apply_scaling(ProblemData& data, const Params& /*p*/) {
     if (data.m == 0 || data.n == 0) return;
 
     Eigen::MatrixXd A_abs = data.A.cwiseAbs();

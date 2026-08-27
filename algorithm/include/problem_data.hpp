@@ -90,10 +90,12 @@ struct fmt::formatter<ProblemData> {
                               "  Empty Rows Removed:     {}\n"
                               "  Empty Cols Removed:     {}\n"
                               "  Singleton Rows Removed: {}\n"
+                              "  Redundant/Forcing Removed: {}\n"
                               "}}",
                               p.name.empty() ? "<unnamed>" : p.name, p.file_name.empty() ? "<none>" : p.file_name, p.m,
                               p.n, p.n_rows_eq, p.n_rows_inq, p.A.rows(), p.A.cols(), p.b.size(), p.lb.size(),
                               p.ub.size(), p.c.size(), fmt::join(p.row_types, ", "), p.obj_constant, p.scaling_applied,
-                              p.fixed_removed, p.empty_rows_removed, p.empty_cols_removed, p.singleton_rows_removed);
+                              p.fixed_removed, p.empty_rows_removed, p.empty_cols_removed, p.singleton_rows_removed,
+                              p.redundant_forcing_removed);
     }
 };

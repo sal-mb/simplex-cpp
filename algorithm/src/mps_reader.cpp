@@ -157,7 +157,8 @@ ProblemData MpsReader::extract_data(ifstream& read_file) {
 
     // get c
     VectorXd c = VectorXd::Zero(n_cols);
-    split_c(Araw, c);
+    double obj_constant = 0.0;
+    split_c(Araw, braw, c, obj_constant);
 
     // get bounds
     VectorXd lb = VectorXd::Zero(n_cols);
@@ -186,6 +187,7 @@ ProblemData MpsReader::extract_data(ifstream& read_file) {
     data.c = c;
     data.row_types = row_types;
     data.name = name;
+    data.obj_constant = obj_constant;
     return data;
 }
 
@@ -264,6 +266,13 @@ void MpsReader::get_bnds(ifstream& read_file, VectorXd& lb, VectorXd& ub) {
     double value;
     int colIdx;
 
+    // Tracks, per column, whether an explicit UP bound has been read in
+    // this BOUNDS section. Needed because MI's "no upper bound given =>
+    // upper bound defaults to 0" rule (see the bound-type table below)
+    // must not clobber an UP bound already given for the same column,
+    // regardless of which of the two lines comes first in the file.
+    vector<bool> ub_explicit(n_cols, false);
+
     read_file.seekg(bnd_pos, ios::beg);
     next_line(read_file);
 
@@ -312,13 +321,26 @@ void MpsReader::get_bnds(ifstream& read_file, VectorXd& lb, VectorXd& ub) {
         if (colIdx < 0) continue;
 
         // cout << "l: " << label << " " << colName << endl;
+        // Each branch only ever writes the side(s) of the bound that its
+        // MPS bound type actually defines (lp_solve mps-format.htm):
+        //   LO  lower bound        b <= x (< +inf)
+        //   UP  upper bound        (0 <=) x <= b
+        //   FX  fixed variable     x = b
+        //   FR  free variable      -inf < x < +inf
+        //   MI  lower bound -inf   -inf < x (<= 0)
+        //   PL  upper bound +inf   (0 <=) x < +inf
+        //   BV  binary variable    x = 0 or 1
+        // The "(...)" parts are only the *default* for the other side,
+        // already established by extract_data()'s initial lb=0/ub=+inf --
+        // they must not be actively re-applied here, or a variable bounded
+        // via two separate lines (e.g. "LO x 2" + "UP x 8") would have
+        // whichever bound was set first silently overwritten by the second
+        // line resetting the side it doesn't own.
         if (label == "LO") {
             lb(colIdx) = value;
-            ub(colIdx) = numeric_limits<double>::infinity();
-
         } else if (label == "UP") {
-            lb(colIdx) = 0.0;
             ub(colIdx) = value;
+            ub_explicit[colIdx] = true;
         } else if (label == "FR") {
             lb(colIdx) = -numeric_limits<double>::infinity();
             ub(colIdx) = numeric_limits<double>::infinity();
@@ -327,9 +349,12 @@ void MpsReader::get_bnds(ifstream& read_file, VectorXd& lb, VectorXd& ub) {
             ub(colIdx) = value;
         } else if (label == "MI") {
             lb(colIdx) = -numeric_limits<double>::infinity();
-            ub(colIdx) = 0.0;
+            // MI's implicit ub=0 default only applies if no UP has set a
+            // real upper bound for this column (in either file order).
+            if (!ub_explicit[colIdx]) {
+                ub(colIdx) = 0.0;
+            }
         } else if (label == "PL") {
-            lb(colIdx) = 0.0;
             ub(colIdx) = numeric_limits<double>::infinity();
         } else if (label == "BV") {
             lb(colIdx) = 0.0;
@@ -338,10 +363,26 @@ void MpsReader::get_bnds(ifstream& read_file, VectorXd& lb, VectorXd& ub) {
     } while (true);
 }
 
-void MpsReader::split_c(MatrixXd& Araw, VectorXd& c) {
-    for (int i = n_rows - 1; i >= 0; i--) {
+void MpsReader::split_c(MatrixXd& Araw, const VectorXd& braw, VectorXd& c, double& obj_constant) {
+    // Per the MPS spec, the first "N" row in the ROWS section is the
+    // objective; any further "N" rows are "no restriction" rows and are
+    // simply dropped along with it (not folded into c). Iterating forward
+    // and only capturing on the first match makes this explicit, rather
+    // than relying on reverse iteration order to happen to leave the
+    // first row's data as the final (accidental) survivor.
+    bool found_objective = false;
+    for (int i = 0; i < n_rows; i++) {
         if (row_labels[i] == "N") {
-            c = Araw.row(i).transpose();
+            if (!found_objective) {
+                c = Araw.row(i).transpose();
+                // The objective may carry a constant via the RHS section,
+                // keyed on the objective row's own name. Following
+                // lp_solve's convention (see mps-format.htm): the RHS
+                // value is used directly as the objective constant,
+                // unnegated.
+                obj_constant = braw(i);
+                found_objective = true;
+            }
             row_labels[i] = "X";
             Araw.row(i).setZero();
         }
@@ -372,7 +413,6 @@ int MpsReader::check_section_name(const string& check_word) {
     if (check_word == "SOS") return 8;
     if (check_word == "RANGES") return 9;
     if (check_word == "ENDATA") return 10;
-    if (check_word == "FR") return 11;
     return -1;
 }
 

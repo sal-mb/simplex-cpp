@@ -72,13 +72,14 @@ namespace {
 
 } // anonymous namespace
 
-void Preprocessor::remove_redundant_forcing_constraints() {
+PresolveResult remove_redundant_forcing_constraints(ProblemData& data, const Params& p) {
     std::vector<int> keep_rows;
     keep_rows.reserve(data.m);
+    int removed = 0;
 
     for (int i = 0; i < data.m; ++i) {
-        LimitSummary lower = compute_lower_limit(i);
-        LimitSummary upper = compute_upper_limit(i);
+        LimitSummary lower = compute_lower_limit(data, p, i);
+        LimitSummary upper = compute_upper_limit(data, p, i);
 
         RowBounds bounds{.L = lower.sum, .U = upper.sum, .L_inf = lower.is_infinite(), .U_inf = upper.is_infinite()};
 
@@ -86,12 +87,28 @@ void Preprocessor::remove_redundant_forcing_constraints() {
 
         if (action == ConstraintAction::ForcingMin || action == ConstraintAction::ForcingMax) {
             apply_forcing_bounds(data, i, action, p.eps);
+
+            // Defensive: forcing pins every variable touching this row to
+            // one specific bound (lb := ub or ub := lb). If a different
+            // row already pinned one of those same variables to an
+            // incompatible value earlier in this pass, it can only show
+            // up as lb > ub right here -- catch it immediately rather
+            // than waiting for the next check_contradicting_bounds() call
+            // (or, worse, letting Simplex trip over it).
+            for (int j = 0; j < data.n; ++j) {
+                if (std::abs(data.A(i, j)) > p.eps && data.lb(j) > data.ub(j) + p.eps) {
+                    throw std::runtime_error("Presolve error: Infeasible bounds after forcing-constraint fix.");
+                }
+            }
         }
 
         if (action == ConstraintAction::Keep) {
             keep_rows.push_back(i);
+        } else {
+            removed++;
         }
     }
 
-    rebuild_rows(keep_rows);
+    bool changed = rebuild_rows(data, keep_rows);
+    return {changed, removed, 0};
 }

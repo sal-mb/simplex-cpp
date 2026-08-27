@@ -116,17 +116,21 @@ namespace {
 
 } // anonymous namespace
 
-void Preprocessor::tighten_individual_bounds() {
+PresolveResult tighten_individual_bounds(ProblemData& data, const Params& p) {
+    bool changed = false;
+
     for (int i = 0; i < data.m; ++i) {
         char type = data.row_types[i];
 
         if (type == 'L' || type == 'E') {
-            LimitSummary lower = compute_lower_limit(i);
+            LimitSummary lower = compute_lower_limit(data, p, i);
             process_lower_limit_tightening(data, i, lower, p.eps, changed);
         }
         if (type == 'G' || type == 'E') {
-            LimitSummary upper = compute_upper_limit(i);
+            LimitSummary upper = compute_upper_limit(data, p, i);
             process_upper_limit_tightening(data, i, upper, p.eps, changed);
         }
     }
+
+    return {changed, 0, 0};
 }
