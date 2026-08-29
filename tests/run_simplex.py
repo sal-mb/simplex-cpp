@@ -98,9 +98,9 @@ RUN_PREP_PROFILES = ["none", "light", "full"]
 
 # ==================== 2. VALORES NUMÉRICOS PARA VARIAR ====================
 NUMERICAL_GRID = {
-    "epsilon": [1e-12, 1e-11, 1e-10, 1e-9, 1e-8, 1e-7, 1e-6, 1e-5],
-    "refactor_period": [1,20],
-    "bland_threshold": [0.0, 1.0],
+    "epsilon": [ 1e-8],
+    "refactor_period": [1],
+    "bland_threshold": [1.0],
 }
 
 # Demais parâmetros estáticos
