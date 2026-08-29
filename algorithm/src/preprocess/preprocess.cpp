@@ -63,20 +63,31 @@ namespace {
     // active techniques and their order is defined -- adding, removing,
     // reordering, or toggling a technique never requires touching
     // Preprocessor::process() itself.
-    const std::array<PresolveTechnique, 6> kPresolveTechniques{{
-            {"tighten_bounds", nullptr, [](const Params& p) { return p.tighten_bounds; },
-             tighten_individual_bounds},
-            {"empty_rows", &ProblemData::empty_rows_removed,
-             [](const Params& p) { return p.remove_empty_rows; }, remove_empty_rows},
-            {"empty_cols", &ProblemData::empty_cols_removed,
-             [](const Params& p) { return p.remove_empty_cols; }, remove_empty_columns},
-            {"redundant_forcing", &ProblemData::redundant_forcing_removed,
-             [](const Params& p) { return p.remove_redundant_forcing; },
-             remove_redundant_forcing_constraints},
-            {"fixed_vars", &ProblemData::fixed_removed, [](const Params& p) { return p.remove_fixed; },
-             remove_fixed_variables},
-            {"singleton_rows", &ProblemData::singleton_rows_removed,
-             [](const Params& p) { return p.remove_singleton_rows; }, remove_singleton_rows},
+    const std::array<PresolveTechnique, 6> K_PRESOLVE_TECHNIQUES{{
+            {.name = "tighten_bounds",
+             .removed_flag = nullptr,
+             .enabled = [](const Params& p) { return p.tighten_bounds; },
+             .apply = tighten_individual_bounds},
+            {.name = "empty_rows",
+             .removed_flag = &ProblemData::empty_rows_removed,
+             .enabled = [](const Params& p) { return p.remove_empty_rows; },
+             .apply = remove_empty_rows},
+            {.name = "empty_cols",
+             .removed_flag = &ProblemData::empty_cols_removed,
+             .enabled = [](const Params& p) { return p.remove_empty_cols; },
+             .apply = remove_empty_columns},
+            {.name = "redundant_forcing",
+             .removed_flag = &ProblemData::redundant_forcing_removed,
+             .enabled = [](const Params& p) { return p.remove_redundant_forcing; },
+             .apply = remove_redundant_forcing_constraints},
+            {.name = "fixed_vars",
+             .removed_flag = &ProblemData::fixed_removed,
+             .enabled = [](const Params& p) { return p.remove_fixed; },
+             .apply = remove_fixed_variables},
+            {.name = "singleton_rows",
+             .removed_flag = &ProblemData::singleton_rows_removed,
+             .enabled = [](const Params& p) { return p.remove_singleton_rows; },
+             .apply = remove_singleton_rows},
     }};
 
 } // namespace
@@ -93,8 +104,10 @@ ProblemData Preprocessor::process() {
         changed = false;
         pass++;
 
-        for (const auto& technique : kPresolveTechniques) {
-            if (!technique.enabled(p)) continue;
+        for (const auto& technique : K_PRESOLVE_TECHNIQUES) {
+            if (!technique.enabled(p)) {
+                continue;
+            }
 
             PresolveResult result = technique.apply(data, p);
             changed |= result.changed;
